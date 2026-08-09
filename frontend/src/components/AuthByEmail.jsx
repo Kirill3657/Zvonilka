@@ -1,7 +1,6 @@
 // src/components/AuthByEmail.jsx
 import React, { useState } from 'react';
 
-// === Адрес бэкенда из переменной окружения ===
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 const AuthByEmail = ({ onAuthSuccess }) => {
@@ -34,8 +33,11 @@ const AuthByEmail = ({ onAuthSuccess }) => {
     }
   };
 
-  // Проверка кода
+  // Проверка кода (с логами)
   const handleVerifyCode = async () => {
+    console.log('🔥 handleVerifyCode вызвана!');
+    console.log('📤 email:', email);
+    console.log('📤 code:', code);
     if (!code) return alert('Введите код');
     setLoading(true);
     try {
@@ -44,7 +46,9 @@ const AuthByEmail = ({ onAuthSuccess }) => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, code }),
       });
+      console.log('📥 статус ответа:', res.status);
       const data = await res.json();
+      console.log('📥 ответ сервера:', data);
       if (data.success) {
         alert('Код верный! Вход выполнен.');
         onAuthSuccess(email, data.userId);
@@ -52,6 +56,7 @@ const AuthByEmail = ({ onAuthSuccess }) => {
         alert('Ошибка: ' + data.error);
       }
     } catch (error) {
+      console.error('❌ Ошибка запроса:', error);
       alert('Ошибка соединения с сервером');
     } finally {
       setLoading(false);
