@@ -2,6 +2,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 
+// === Адрес бэкенда: берём из переменной окружения, или localhost для разработки ===
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
+// === Администратор (замени email на свой, если нужно) ===
+const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
+
 const Chat = ({ userId, userEmail }) => {
   const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
@@ -9,29 +15,29 @@ const Chat = ({ userId, userEmail }) => {
   const [editText, setEditText] = useState('');
   const socketRef = useRef(null);
 
-  // Определяем, является ли текущий пользователь админом
-  const isAdmin = userEmail === 'admin@example.com'; // замени на свой админ-email
+  // Проверка, является ли пользователь админом
+  const isAdmin = userEmail === ADMIN_EMAIL;
 
-  // Подключение к сокету и загрузка истории
+  // Подключение к WebSocket и загрузка истории
   useEffect(() => {
-    // Подключаемся к бэкенду
-    socketRef.current = io('http://localhost:5000');
+    // Создаём соединение с бэкендом
+    socketRef.current = io(API_URL);
     socketRef.current.emit('set-user', userId);
 
-    // Слушаем новые сообщения
+    // Приём новых сообщений
     socketRef.current.on('message', (msg) => {
       setMessages((prev) => [...prev, msg]);
     });
 
-    // Слушаем обновления сообщений (редактирование)
+    // Приём обновлений (редактирование)
     socketRef.current.on('message-updated', (updatedMsg) => {
       setMessages((prev) =>
         prev.map((m) => (m.id === updatedMsg.id ? updatedMsg : m))
       );
     });
 
-    // Загружаем историю сообщений с сервера
-    fetch('/api/messages')
+    // Загрузка истории сообщений
+    fetch(`${API_URL}/api/messages`)
       .then((res) => res.json())
       .then((data) => setMessages(data))
       .catch((err) => console.error('Ошибка загрузки истории:', err));
@@ -48,12 +54,12 @@ const Chat = ({ userId, userEmail }) => {
     socketRef.current.emit('new-message', {
       userId,
       text: inputText,
-      displayName: userEmail.split('@')[0], // имя пользователя = часть до @
+      displayName: userEmail.split('@')[0],
     });
     setInputText('');
   };
 
-  // Начать редактирование (для своих сообщений или админ)
+  // Начать редактирование
   const startEdit = (msg) => {
     setEditingId(msg.id);
     setEditText(msg.text);
@@ -69,7 +75,7 @@ const Chat = ({ userId, userEmail }) => {
   const saveEdit = async () => {
     if (!editText.trim()) return;
     try {
-      const res = await fetch(`/api/messages/${editingId}`, {
+      const res = await fetch(`${API_URL}/api/messages/${editingId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text: editText, userId }),
@@ -85,9 +91,9 @@ const Chat = ({ userId, userEmail }) => {
     }
   };
 
-  // Выход из системы
+  // Выход
   const handleLogout = () => {
-    window.location.reload(); // просто перезагружаем страницу, возвращаемся к авторизации
+    window.location.reload();
   };
 
   return (
@@ -133,7 +139,6 @@ const Chat = ({ userId, userEmail }) => {
               textAlign: msg.userId === userId ? 'right' : 'left',
             }}
           >
-            {/* Если сообщение в режиме редактирования */}
             {editingId === msg.id ? (
               <div
                 style={{
@@ -150,12 +155,8 @@ const Chat = ({ userId, userEmail }) => {
                   style={{ width: '200px', padding: '4px' }}
                   autoFocus
                 />
-                <button onClick={saveEdit} style={{ marginLeft: 8 }}>
-                  💾
-                </button>
-                <button onClick={cancelEdit} style={{ marginLeft: 4 }}>
-                  ✖️
-                </button>
+                <button onClick={saveEdit} style={{ marginLeft: 8 }}>💾</button>
+                <button onClick={cancelEdit} style={{ marginLeft: 4 }}>✖️</button>
               </div>
             ) : (
               <div
@@ -174,8 +175,6 @@ const Chat = ({ userId, userEmail }) => {
                 </div>
                 {msg.text}
                 {msg.edited && <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 6 }}>(ред.)</span>}
-                
-                {/* Кнопка редактирования - показываем если сообщение своё или админ */}
                 {(msg.userId === userId || isAdmin) && (
                   <button
                     onClick={() => startEdit(msg)}
@@ -196,7 +195,7 @@ const Chat = ({ userId, userEmail }) => {
         ))}
       </div>
 
-      {/* Форма отправки нового сообщения */}
+      {/* Форма отправки */}
       <div style={{ display: 'flex', marginTop: 10, gap: 10 }}>
         <input
           value={inputText}

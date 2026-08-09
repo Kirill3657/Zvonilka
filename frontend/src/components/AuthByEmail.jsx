@@ -1,6 +1,9 @@
 // src/components/AuthByEmail.jsx
 import React, { useState } from 'react';
 
+// === Адрес бэкенда из переменной окружения ===
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
 const AuthByEmail = ({ onAuthSuccess }) => {
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
@@ -12,7 +15,7 @@ const AuthByEmail = ({ onAuthSuccess }) => {
     if (!email) return alert('Введите email');
     setLoading(true);
     try {
-      const res = await fetch('/api/send-code', {
+      const res = await fetch(`${API_URL}/api/send-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email }),
@@ -36,7 +39,7 @@ const AuthByEmail = ({ onAuthSuccess }) => {
     if (!code) return alert('Введите код');
     setLoading(true);
     try {
-      const res = await fetch('/api/verify-code', {
+      const res = await fetch(`${API_URL}/api/verify-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, code }),
@@ -44,7 +47,6 @@ const AuthByEmail = ({ onAuthSuccess }) => {
       const data = await res.json();
       if (data.success) {
         alert('Код верный! Вход выполнен.');
-        // Передаём в App и email, и userId
         onAuthSuccess(email, data.userId);
       } else {
         alert('Ошибка: ' + data.error);
