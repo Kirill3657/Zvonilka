@@ -1,12 +1,10 @@
 const express = require('express');
-const cors = require('cors');
 const { Resend } = require('resend');
 const http = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
