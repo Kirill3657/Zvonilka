@@ -1,11 +1,16 @@
 // src/components/Chat.jsx
 import React, { useState, useEffect, useRef } from 'react';
 
+// HTTP-запросы идут через этот URL (может быть Worker или прямой бэкенд)
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
+
+// Адрес WebSocket — напрямую к бэкенду, минуя Worker
+const WS_URL = 'wss://zvonilka-backend.onrender.com/ws';
+
 const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
 
 const Chat = ({ userId, userEmail }) => {
-  const [messages, setMessages] = useState([]); // всегда массив
+  const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState('');
@@ -14,11 +19,11 @@ const Chat = ({ userId, userEmail }) => {
 
   // --- WebSocket ---
   useEffect(() => {
-    const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
-    wsRef.current = new WebSocket(wsUrl);
+    // Подключаемся напрямую к бэкенду
+    wsRef.current = new WebSocket(WS_URL);
 
     wsRef.current.onopen = () => {
-      console.log('🔌 WebSocket подключён');
+      console.log('🔌 WebSocket подключён (прямое соединение)');
       wsRef.current.send(JSON.stringify({ command: 'set-user', userId }));
     };
 
@@ -30,7 +35,9 @@ const Chat = ({ userId, userEmail }) => {
         } else if (data.type === 'message-updated') {
           setMessages(prev => prev.map(m => m.id === data.payload.id ? data.payload : m));
         }
-      } catch (e) { console.error('Ошибка парсинга WebSocket', e); }
+      } catch (e) {
+        console.error('Ошибка парсинга WebSocket', e);
+      }
     };
 
     wsRef.current.onerror = (error) => {
@@ -41,9 +48,12 @@ const Chat = ({ userId, userEmail }) => {
       console.log('🔌 WebSocket отключён');
     };
 
-    // --- Загрузка истории ---
+    // --- Загрузка истории (через HTTP) ---
     fetch(`${API_URL}/api/messages`)
-      .then(res => res.json())
+      .then(res => {
+        if (!res.ok) throw new Error('Ошибка загрузки');
+        return res.json();
+      })
       .then(data => {
         if (Array.isArray(data)) {
           setMessages(data);
@@ -62,7 +72,7 @@ const Chat = ({ userId, userEmail }) => {
     };
   }, [userId]);
 
-  // --- Отправка ---
+  // --- Отправка сообщения через WebSocket ---
   const sendMessage = () => {
     if (!inputText.trim()) return;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -112,7 +122,6 @@ const Chat = ({ userId, userEmail }) => {
       </div>
 
       <div style={{ border: '1px solid #ccc', height: 400, overflowY: 'scroll', padding: 10, background: '#f9f9f9', borderRadius: 8, marginTop: 10 }}>
-        {/* Используем (messages || []).map для защиты */}
         {(messages || []).map((msg) => (
           <div key={msg.id} style={{ margin: '8px 0', textAlign: msg.userId === userId ? 'right' : 'left' }}>
             {editingId === msg.id ? (
@@ -123,7 +132,10 @@ const Chat = ({ userId, userEmail }) => {
               </div>
             ) : (
               <div style={{ display: 'inline-block', background: msg.userId === userId ? '#007bff' : '#e9ecef', color: msg.userId === userId ? '#fff' : '#000', padding: '8px 12px', borderRadius: 12, maxWidth: '80%' }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>{msg.displayName}{msg.editedByAdmin && ' (админ)'}</div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>
+                  {msg.displayName}
+                  {msg.editedByAdmin && ' (админ)'}
+                </div>
                 {msg.text}
                 {msg.edited && <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 6 }}>(ред.)</span>}
                 {(msg.userId === userId || isAdmin) && (
