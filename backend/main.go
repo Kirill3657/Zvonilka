@@ -50,7 +50,7 @@ func generateCode() string {
 	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 }
 
-// --- Подключение к БД ---
+// --- Инициализация БД (создание таблиц) ---
 func initDB() error {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
@@ -59,12 +59,14 @@ func initDB() error {
 	var err error
 	db, err = sql.Open("postgres", connStr)
 	if err != nil {
-		return err
+		return fmt.Errorf("ошибка открытия БД: %w", err)
 	}
 	err = db.Ping()
 	if err != nil {
-		return err
+		return fmt.Errorf("не могу подключиться к БД: %w", err)
 	}
+	log.Println("✅ Подключение к БД успешно")
+
 	// Создаём таблицы
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
@@ -81,12 +83,16 @@ func initDB() error {
 			editedByAdmin BOOLEAN DEFAULT FALSE
 		);
 	`)
-	return err
+	if err != nil {
+		return fmt.Errorf("ошибка создания таблиц: %w", err)
+	}
+	log.Println("✅ Таблицы созданы (или уже существуют)")
+	return nil
 }
 
-// --- HTTP Хендлеры ---
+// --- Хендлеры ---
 
-// Отправка кода
+// 1. Отправка кода
 func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -123,7 +129,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
-// Проверка кода
+// 2. Проверка кода
 func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -165,7 +171,7 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "userId": userId})
 }
 
-// Получить все сообщения
+// 3. Получить все сообщения (ИСПРАВЛЕНО: возвращает [] вместо null)
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -173,24 +179,31 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := db.Query("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages ORDER BY createdAt ASC")
 	if err != nil {
+		log.Printf("❌ Ошибка запроса к БД: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
 	defer rows.Close()
-	var messages []Message
+
+	messages := []Message{} // инициализируем пустым срезом, а не nil
 	for rows.Next() {
 		var m Message
 		err = rows.Scan(&m.ID, &m.Text, &m.UserID, &m.DisplayName, &m.CreatedAt, &m.Edited, &m.EditedByAdmin)
 		if err != nil {
+			log.Printf("❌ Ошибка сканирования: %v", err)
 			continue
 		}
 		messages = append(messages, m)
+	}
+	// Если по каким-то причинам messages всё ещё nil (чего быть не должно), явно делаем пустым
+	if messages == nil {
+		messages = []Message{}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(messages)
 }
 
-// Отправить новое сообщение (для polling)
+// 4. Отправить новое сообщение (для polling)
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -216,6 +229,7 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 		id, req.Text, req.UserId, displayName,
 	)
 	if err != nil {
+		log.Printf("❌ Ошибка вставки: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -224,17 +238,18 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
 	if err != nil {
+		log.Printf("❌ Ошибка получения сообщения: %v", err)
 		http.Error(w, "Ошибка получения сообщения", http.StatusInternalServerError)
 		return
 	}
-	// Отправляем всем через WebSocket
+	// Отправляем через WebSocket всем клиентам
 	broadcastMessage(msg)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": msg})
 }
 
-// Редактирование сообщения
+// 5. Редактирование сообщения
 func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -271,6 +286,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = db.Exec("UPDATE messages SET text = $1, edited = TRUE WHERE id = $2", req.Text, msgID)
 	if err != nil {
+		log.Printf("❌ Ошибка обновления: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -279,6 +295,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&updated.ID, &updated.Text, &updated.UserID, &updated.DisplayName, &updated.CreatedAt, &updated.Edited, &updated.EditedByAdmin)
 	if err != nil {
+		log.Printf("❌ Ошибка получения обновлённого сообщения: %v", err)
 		http.Error(w, "Ошибка получения обновлённого сообщения", http.StatusInternalServerError)
 		return
 	}
@@ -342,12 +359,14 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 				id, text, userId, displayName,
 			)
 			if err != nil {
+				log.Printf("❌ Ошибка вставки (ws): %v", err)
 				continue
 			}
 			var msgData Message
 			err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
 				Scan(&msgData.ID, &msgData.Text, &msgData.UserID, &msgData.DisplayName, &msgData.CreatedAt, &msgData.Edited, &msgData.EditedByAdmin)
 			if err != nil {
+				log.Printf("❌ Ошибка получения сообщения (ws): %v", err)
 				continue
 			}
 			broadcastMessage(msgData)
@@ -359,7 +378,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	clientsMux.Unlock()
 }
 
-// --- Рассылка сообщений через WebSocket ---
+// --- Рассылка через WebSocket ---
 func broadcastMessage(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
@@ -420,9 +439,8 @@ func main() {
 	}
 	err = initDB()
 	if err != nil {
-		log.Fatal("❌ Ошибка подключения к БД:", err)
+		log.Fatal("❌ Ошибка инициализации БД:", err)
 	}
-	log.Println("✅ PostgreSQL подключена")
 
 	http.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
 	http.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
@@ -440,7 +458,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "5000"
+		port = "10000"
 	}
 	log.Printf("✅ Бэкенд запущен на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
