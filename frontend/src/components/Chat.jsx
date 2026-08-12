@@ -5,41 +5,32 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
 
 const Chat = ({ userId, userEmail }) => {
-  const [messages, setMessages] = useState([]);
+  const [messages, setMessages] = useState([]); // всегда массив
   const [inputText, setInputText] = useState('');
   const [editingId, setEditingId] = useState(null);
   const [editText, setEditText] = useState('');
   const wsRef = useRef(null);
   const isAdmin = userEmail === ADMIN_EMAIL;
 
-  // --- Подключение к WebSocket ---
+  // --- WebSocket ---
   useEffect(() => {
-    // Создаём WebSocket-соединение
     const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
     wsRef.current = new WebSocket(wsUrl);
 
     wsRef.current.onopen = () => {
       console.log('🔌 WebSocket подключён');
-      // Отправляем идентификатор пользователя
-      wsRef.current.send(JSON.stringify({
-        command: 'set-user',
-        userId: userId,
-      }));
+      wsRef.current.send(JSON.stringify({ command: 'set-user', userId }));
     };
 
     wsRef.current.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      console.log('📩 Получено сообщение:', data);
-
-      if (data.type === 'message') {
-        // Новое сообщение
-        setMessages((prev) => [...prev, data.payload]);
-      } else if (data.type === 'message-updated') {
-        // Обновление сообщения
-        setMessages((prev) =>
-          prev.map((m) => (m.id === data.payload.id ? data.payload : m))
-        );
-      }
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'message') {
+          setMessages(prev => [...prev, data.payload]);
+        } else if (data.type === 'message-updated') {
+          setMessages(prev => prev.map(m => m.id === data.payload.id ? data.payload : m));
+        }
+      } catch (e) { console.error('Ошибка парсинга WebSocket', e); }
     };
 
     wsRef.current.onerror = (error) => {
@@ -50,18 +41,28 @@ const Chat = ({ userId, userEmail }) => {
       console.log('🔌 WebSocket отключён');
     };
 
-    // Загружаем историю сообщений (через HTTP)
+    // --- Загрузка истории ---
     fetch(`${API_URL}/api/messages`)
-      .then((res) => res.json())
-      .then((data) => setMessages(data))
-      .catch((err) => console.error('Ошибка загрузки истории:', err));
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data)) {
+          setMessages(data);
+        } else {
+          console.warn('Неверный формат данных:', data);
+          setMessages([]);
+        }
+      })
+      .catch(err => {
+        console.error('Ошибка загрузки истории:', err);
+        setMessages([]);
+      });
 
     return () => {
       if (wsRef.current) wsRef.current.close();
     };
   }, [userId]);
 
-  // --- Отправка сообщения через WebSocket ---
+  // --- Отправка ---
   const sendMessage = () => {
     if (!inputText.trim()) return;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -76,17 +77,9 @@ const Chat = ({ userId, userEmail }) => {
     }
   };
 
-  // --- Редактирование (через HTTP) ---
-  const startEdit = (msg) => {
-    setEditingId(msg.id);
-    setEditText(msg.text);
-  };
-
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditText('');
-  };
-
+  // --- Редактирование (HTTP) ---
+  const startEdit = (msg) => { setEditingId(msg.id); setEditText(msg.text); };
+  const cancelEdit = () => { setEditingId(null); setEditText(''); };
   const saveEdit = async () => {
     if (!editText.trim()) return;
     try {
@@ -105,7 +98,7 @@ const Chat = ({ userId, userEmail }) => {
 
   const handleLogout = () => window.location.reload();
 
-  // --- Интерфейс ---
+  // --- Рендер ---
   return (
     <div style={{ maxWidth: 600, margin: '0 auto', padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -119,7 +112,8 @@ const Chat = ({ userId, userEmail }) => {
       </div>
 
       <div style={{ border: '1px solid #ccc', height: 400, overflowY: 'scroll', padding: 10, background: '#f9f9f9', borderRadius: 8, marginTop: 10 }}>
-        {messages.map((msg) => (
+        {/* Используем (messages || []).map для защиты */}
+        {(messages || []).map((msg) => (
           <div key={msg.id} style={{ margin: '8px 0', textAlign: msg.userId === userId ? 'right' : 'left' }}>
             {editingId === msg.id ? (
               <div style={{ display: 'inline-block', background: '#fff', padding: '8px 12px', borderRadius: 12, border: '1px solid #007bff' }}>
@@ -129,16 +123,11 @@ const Chat = ({ userId, userEmail }) => {
               </div>
             ) : (
               <div style={{ display: 'inline-block', background: msg.userId === userId ? '#007bff' : '#e9ecef', color: msg.userId === userId ? '#fff' : '#000', padding: '8px 12px', borderRadius: 12, maxWidth: '80%' }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                  {msg.displayName}
-                  {msg.editedByAdmin && ' (отредактировано админом)'}
-                </div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>{msg.displayName}{msg.editedByAdmin && ' (админ)'}</div>
                 {msg.text}
                 {msg.edited && <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 6 }}>(ред.)</span>}
                 {(msg.userId === userId || isAdmin) && (
-                  <button onClick={() => startEdit(msg)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12 }}>
-                    ✏️
-                  </button>
+                  <button onClick={() => startEdit(msg)} style={{ marginLeft: 8, background: 'none', border: 'none', cursor: 'pointer', fontSize: 12 }}>✏️</button>
                 )}
               </div>
             )}
