@@ -17,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/resend/resend-go/v2"
+	"github.com/rs/cors"
 )
 
 // --- Структуры ---
@@ -160,21 +161,6 @@ func initDB() error {
 	return nil
 }
 
-// --- CORS Middleware (с логированием) ---
-func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("🌐 CORS: %s %s", r.Method, r.URL.Path)
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		next(w, r)
-	}
-}
-
 // --- Хендлеры ---
 
 // 1. Отправка кода
@@ -234,7 +220,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka <hello@zvonilka.site>",
+		From:    "Zvonilka Team <hello@mail.zvonilka.site>",
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -629,11 +615,11 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Регистрируем маршруты с CORS middleware
-	mux.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
-	mux.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
+	// Регистрируем эндпоинты
+	mux.HandleFunc("/api/send-code", sendCodeHandler)
+	mux.HandleFunc("/api/verify-code", verifyCodeHandler)
 
-	mux.HandleFunc("/api/profile", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/profile", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			authMiddleware(getUserProfileHandler)(w, r)
 		} else if r.Method == http.MethodPut {
@@ -641,12 +627,12 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
+	})
 
-	mux.HandleFunc("/api/users", corsMiddleware(authMiddleware(getUsersHandler)))
-	mux.HandleFunc("/api/users/", corsMiddleware(authMiddleware(setAdminHandler)))
+	mux.HandleFunc("/api/users", authMiddleware(getUsersHandler))
+	mux.HandleFunc("/api/users/", authMiddleware(setAdminHandler))
 
-	mux.HandleFunc("/api/messages", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			authMiddleware(getMessagesHandler)(w, r)
 		} else if r.Method == http.MethodPost {
@@ -654,12 +640,25 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
-	mux.HandleFunc("/api/messages/", corsMiddleware(authMiddleware(editMessageHandler)))
+	})
+	mux.HandleFunc("/api/messages/", authMiddleware(editMessageHandler))
 
-	mux.HandleFunc("/ws", corsMiddleware(wsHandler))
+	mux.HandleFunc("/ws", wsHandler)
 
-	port := "10000"
+	// --- Настройка CORS через rs/cors ---
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept"},
+		ExposedHeaders:   []string{"Content-Length"},
+		AllowCredentials: false,
+	})
+	handler := c.Handler(mux)
+
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "10000"
+	}
 	log.Printf("✅ Бэкенд запущен на порту %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, mux))
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
