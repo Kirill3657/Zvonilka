@@ -1,11 +1,9 @@
 // src/components/AdminPanel.jsx
 import React, { useState, useEffect } from 'react';
-import { useTheme } from '../ThemeContext';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 const AdminPanel = ({ token, onClose }) => {
-    const { t } = useTheme();
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
 
