@@ -1,6 +1,6 @@
 // src/App.jsx
 import React, { useState, useEffect } from 'react';
-import { ThemeProvider, useTheme } from './ThemeContext';
+import { ThemeProvider } from './ThemeContext';
 import AuthByEmail from './components/AuthByEmail';
 import ProfileSetup from './components/ProfileSetup';
 import Chat from './components/Chat';
