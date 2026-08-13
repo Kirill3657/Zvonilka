@@ -5,7 +5,7 @@ import React, { useState, useEffect, useRef } from 'react';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 // Адрес WebSocket — напрямую к бэкенду, минуя Worker
-const WS_URL = 'wss://zvonilka-backend.onrender.com/ws';
+const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
 
 const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
 
