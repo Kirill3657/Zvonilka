@@ -1,12 +1,7 @@
 // src/components/Chat.jsx
 import React, { useState, useEffect, useRef } from 'react';
 
-// HTTP-запросы идут через этот URL (может быть Worker или прямой бэкенд)
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
-
-// Адрес WebSocket — напрямую к бэкенду
-const wsUrl = 'wss://zvonilka.relaxdev.ru/ws';
-
 const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
 
 const Chat = ({ userId, userEmail }) => {
@@ -17,13 +12,14 @@ const Chat = ({ userId, userEmail }) => {
   const wsRef = useRef(null);
   const isAdmin = userEmail === ADMIN_EMAIL;
 
-  // --- WebSocket ---
   useEffect(() => {
-    // Подключаемся напрямую к бэкенду
-    wsRef.current = new WebSocket(WS_URL);
+    // --- WebSocket: формируем динамический URL ---
+    const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
+    console.log('🔌 Подключаюсь к WebSocket:', wsUrl);
+    wsRef.current = new WebSocket(wsUrl);
 
     wsRef.current.onopen = () => {
-      console.log('🔌 WebSocket подключён (прямое соединение)');
+      console.log('🔌 WebSocket подключён');
       wsRef.current.send(JSON.stringify({ command: 'set-user', userId }));
     };
 
@@ -48,7 +44,7 @@ const Chat = ({ userId, userEmail }) => {
       console.log('🔌 WebSocket отключён');
     };
 
-    // --- Загрузка истории (через HTTP) ---
+    // --- Загрузка истории ---
     fetch(`${API_URL}/api/messages`)
       .then(res => {
         if (!res.ok) throw new Error('Ошибка загрузки');
@@ -72,7 +68,6 @@ const Chat = ({ userId, userEmail }) => {
     };
   }, [userId]);
 
-  // --- Отправка сообщения через WebSocket ---
   const sendMessage = () => {
     if (!inputText.trim()) return;
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -83,11 +78,10 @@ const Chat = ({ userId, userEmail }) => {
       }));
       setInputText('');
     } else {
-      alert('Нет соединения с сервером');
+      alert('Нет соединения с сервером (WebSocket)');
     }
   };
 
-  // --- Редактирование (HTTP) ---
   const startEdit = (msg) => { setEditingId(msg.id); setEditText(msg.text); };
   const cancelEdit = () => { setEditingId(null); setEditText(''); };
   const saveEdit = async () => {
@@ -108,7 +102,6 @@ const Chat = ({ userId, userEmail }) => {
 
   const handleLogout = () => window.location.reload();
 
-  // --- Рендер ---
   return (
     <div style={{ maxWidth: 600, margin: '0 auto', padding: 20 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -132,10 +125,7 @@ const Chat = ({ userId, userEmail }) => {
               </div>
             ) : (
               <div style={{ display: 'inline-block', background: msg.userId === userId ? '#007bff' : '#e9ecef', color: msg.userId === userId ? '#fff' : '#000', padding: '8px 12px', borderRadius: 12, maxWidth: '80%' }}>
-                <div style={{ fontSize: 12, opacity: 0.7 }}>
-                  {msg.displayName}
-                  {msg.editedByAdmin && ' (админ)'}
-                </div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>{msg.displayName}{msg.editedByAdmin && ' (админ)'}</div>
                 {msg.text}
                 {msg.edited && <span style={{ fontSize: 10, opacity: 0.5, marginLeft: 6 }}>(ред.)</span>}
                 {(msg.userId === userId || isAdmin) && (
