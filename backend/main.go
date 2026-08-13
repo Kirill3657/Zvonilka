@@ -30,6 +30,16 @@ type Message struct {
 	EditedByAdmin bool      `json:"editedByAdmin"`
 }
 
+type User struct {
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	FirstName string `json:"firstName"`
+	LastName  string `json:"lastName"`
+	IsAdmin   bool   `json:"isAdmin"`
+	Theme     string `json:"theme"`
+	Lang      string `json:"lang"`
+}
+
 type CodeRecord struct {
 	Code      string
 	ExpiresAt time.Time
@@ -44,15 +54,15 @@ var (
 	clients     = make(map[*websocket.Conn]string)
 	clientsMux  sync.RWMutex
 	resendKey   string
-	adminEmail  string
 	jwtSecret   []byte
 )
 
 // --- JWT ---
-func generateToken(userId string) (string, error) {
+func generateToken(userId string, isAdmin bool) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"userId": userId,
-		"exp":    time.Now().Add(time.Hour * 24 * 7).Unix(),
+		"userId":  userId,
+		"isAdmin": isAdmin,
+		"exp":     time.Now().Add(time.Hour * 24 * 7).Unix(),
 	})
 	return token.SignedString(jwtSecret)
 }
@@ -77,12 +87,10 @@ func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
-		userId, ok := claims["userId"].(string)
-		if !ok {
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
+		userId, _ := claims["userId"].(string)
+		isAdmin, _ := claims["isAdmin"].(bool)
 		ctx := context.WithValue(r.Context(), "userId", userId)
+		ctx = context.WithValue(ctx, "isAdmin", isAdmin)
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -112,6 +120,9 @@ func initDB() error {
 		CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
 			email TEXT UNIQUE NOT NULL,
+			first_name TEXT,
+			last_name TEXT,
+			is_admin BOOLEAN DEFAULT FALSE,
 			theme TEXT DEFAULT 'light',
 			lang TEXT DEFAULT 'ru'
 		);
@@ -151,7 +162,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	codesStore[req.Email] = CodeRecord{Code: code, ExpiresAt: time.Now().Add(5 * time.Minute)}
 	codesMutex.Unlock()
 
-	client := resend.NewClient(resendKey)
+	client := resend.NewClient(os.Getenv("RESEND_API_KEY"))
 	htmlContent := fmt.Sprintf(`
 	<!DOCTYPE html>
 	<html>
@@ -165,19 +176,24 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 		.logo { font-size: 48px; margin-bottom: 10px; }
 		h1 { font-size: 24px; color: #1a1a2e; margin: 0 0 8px 0; font-weight: 700; }
 		.sub { color: #555; font-size: 16px; margin-bottom: 30px; }
-		.code { font-size: 52px; font-weight: 700; letter-spacing: 8px; color: #1a73e8; background: #e8f0fe; padding: 12px 20px; border-radius: 12px; display: inline-block; margin: 20px 0; font-family: 'Courier New', monospace; }
-		.info { font-size: 14px; color: #666; margin: 20px 0 30px; }
+		.code-box { background: #e8f0fe; padding: 20px; border-radius: 12px; margin: 20px 0; }
+		.code { font-size: 52px; font-weight: 700; letter-spacing: 8px; color: #1a73e8; font-family: 'Courier New', monospace; }
+		.info { font-size: 14px; color: #666; margin: 20px 0; }
+		.copy-btn { background: #1a73e8; color: #fff; border: none; padding: 12px 24px; border-radius: 8px; font-size: 16px; cursor: pointer; text-decoration: none; display: inline-block; }
 		.footer { font-size: 13px; color: #aaa; border-top: 1px solid #eee; padding-top: 20px; margin-top: 20px; }
 		.footer a { color: #1a73e8; text-decoration: none; }
-	  </style>
+	</style>
 	</head>
 	<body>
 	  <div class="container">
 		<div class="logo">📱</div>
 		<h1>Zvonilka</h1>
 		<p class="sub">Ваш код подтверждения</p>
-		<div class="code">%s</div>
-		<p class="info">Код действителен <strong>5 минут</strong>.<br>Если вы не запрашивали код — просто проигнорируйте это письмо.</p>
+		<div class="code-box">
+		  <div class="code" id="code">%s</div>
+		</div>
+		<button class="copy-btn" onclick="navigator.clipboard.writeText(document.getElementById('code').innerText)">Скопировать код</button>
+		<p class="info">Код действителен <strong>5 минут</strong>.</p>
 		<div class="footer">Команда Zvonilka &mdash; <a href="https://zvonilka.site">zvonilka.site</a></div>
 	  </div>
 	</body>
@@ -185,7 +201,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka <hello@mail.zvonilka.site>", // замени на свой домен
+		From:    "Zvonilka Team <hello@mail.zvonilka.site>", // замени на свой
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -235,26 +251,133 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	codesMutex.Unlock()
 
 	userId := req.Email
-	_, _ = db.Exec("INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING", userId, req.Email)
+	// Проверяем, существует ли пользователь
+	var isAdmin bool
+	err = db.QueryRow("SELECT is_admin FROM users WHERE id = $1", userId).Scan(&isAdmin)
+	if err == sql.ErrNoRows {
+		// Создаём нового пользователя (без имени)
+		_, err = db.Exec("INSERT INTO users (id, email, is_admin) VALUES ($1, $2, $3)", userId, req.Email, false)
+		if err != nil {
+			http.Error(w, "Ошибка создания пользователя", http.StatusInternalServerError)
+			return
+		}
+		isAdmin = false
+	} else if err != nil {
+		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
+		return
+	}
 
-	token, err := generateToken(userId)
+	token, err := generateToken(userId, isAdmin)
 	if err != nil {
 		http.Error(w, "Ошибка генерации токена", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "userId": userId, "token": token})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"userId":  userId,
+		"token":   token,
+		"isAdmin": isAdmin,
+	})
 }
 
-// Получение всех сообщений (защищено JWT)
-func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+// Получение профиля пользователя
+func getUserProfileHandler(w http.ResponseWriter, r *http.Request) {
+	userId := r.Context().Value("userId").(string)
+	var user User
+	err := db.QueryRow("SELECT id, email, first_name, last_name, is_admin, theme, lang FROM users WHERE id = $1", userId).
+		Scan(&user.ID, &user.Email, &user.FirstName, &user.LastName, &user.IsAdmin, &user.Theme, &user.Lang)
+	if err != nil {
+		http.Error(w, "Пользователь не найден", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+// Обновление профиля (имя, фамилия, тема, язык)
+func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	userId := r.Context().Value("userId").(string)
+	var req struct {
+		FirstName string `json:"firstName"`
+		LastName  string `json:"lastName"`
+		Theme     string `json:"theme"`
+		Lang      string `json:"lang"`
+	}
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Неверный запрос", http.StatusBadRequest)
+		return
+	}
+	_, err = db.Exec(`
+		UPDATE users SET first_name = $1, last_name = $2, theme = $3, lang = $4 WHERE id = $5
+	`, req.FirstName, req.LastName, req.Theme, req.Lang, userId)
+	if err != nil {
+		http.Error(w, "Ошибка обновления", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// --- Получение списка пользователей (только админ) ---
+func getUsersHandler(w http.ResponseWriter, r *http.Request) {
+	isAdmin := r.Context().Value("isAdmin").(bool)
+	if !isAdmin {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	rows, err := db.Query("SELECT id, email, first_name, last_name, is_admin, theme, lang FROM users ORDER BY email")
+	if err != nil {
+		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		rows.Scan(&u.ID, &u.Email, &u.FirstName, &u.LastName, &u.IsAdmin, &u.Theme, &u.Lang)
+		users = append(users, u)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(users)
+}
+
+// --- Назначение админа (только админ) ---
+func setAdminHandler(w http.ResponseWriter, r *http.Request) {
+	isAdmin := r.Context().Value("isAdmin").(bool)
+	if !isAdmin {
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	// Извлекаем userId из пути
+	pathParts := strings.Split(r.URL.Path, "/")
+	if len(pathParts) < 4 {
+		http.Error(w, "Неверный путь", http.StatusBadRequest)
+		return
+	}
+	targetUserId := pathParts[3]
+	var req struct{ IsAdmin bool }
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil {
+		http.Error(w, "Неверный запрос", http.StatusBadRequest)
+		return
+	}
+	_, err = db.Exec("UPDATE users SET is_admin = $1 WHERE id = $2", req.IsAdmin, targetUserId)
+	if err != nil {
+		http.Error(w, "Ошибка обновления", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+}
+
+// --- Сообщения ---
+func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	rows, err := db.Query("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages ORDER BY createdAt ASC")
 	if err != nil {
-		log.Printf("❌ Ошибка запроса: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -262,9 +385,8 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	var messages []Message
 	for rows.Next() {
 		var m Message
-		if err := rows.Scan(&m.ID, &m.Text, &m.UserID, &m.DisplayName, &m.CreatedAt, &m.Edited, &m.EditedByAdmin); err == nil {
-			messages = append(messages, m)
-		}
+		rows.Scan(&m.ID, &m.Text, &m.UserID, &m.DisplayName, &m.CreatedAt, &m.Edited, &m.EditedByAdmin)
+		messages = append(messages, m)
 	}
 	if messages == nil {
 		messages = []Message{}
@@ -273,7 +395,6 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
-// Отправка нового сообщения (для polling)
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -284,7 +405,8 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 		Text        string `json:"text"`
 		DisplayName string `json:"displayName"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserId == "" || req.Text == "" {
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil || req.UserId == "" || req.Text == "" {
 		http.Error(w, "Нет данных", http.StatusBadRequest)
 		return
 	}
@@ -293,12 +415,11 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if displayName == "" {
 		displayName = strings.Split(req.UserId, "@")[0]
 	}
-	_, err := db.Exec(
+	_, err = db.Exec(
 		"INSERT INTO messages (id, text, userId, displayName, createdAt) VALUES ($1, $2, $3, $4, NOW())",
 		id, req.Text, req.UserId, displayName,
 	)
 	if err != nil {
-		log.Printf("Ошибка вставки: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -310,7 +431,6 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": msg})
 }
 
-// Редактирование сообщения
 func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -326,26 +446,28 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		Text   string `json:"text"`
 		UserId string `json:"userId"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Text == "" {
+	err := json.NewDecoder(r.Body).Decode(&req)
+	if err != nil || req.Text == "" {
 		http.Error(w, "Текст обязателен", http.StatusBadRequest)
 		return
 	}
+	// Проверяем права
 	var msg Message
-	err := db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
+	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
 	if err != nil {
 		http.Error(w, "Сообщение не найдено", http.StatusNotFound)
 		return
 	}
-	isAdmin := req.UserId == adminEmail
+	isAdmin := r.Context().Value("isAdmin").(bool)
 	isOwner := msg.UserID == req.UserId
 	if !isOwner && !isAdmin {
 		http.Error(w, "Нет прав", http.StatusForbidden)
 		return
 	}
-	_, err = db.Exec("UPDATE messages SET text = $1, edited = TRUE WHERE id = $2", req.Text, msgID)
+	// Обновляем
+	_, err = db.Exec("UPDATE messages SET text = $1, edited = $2 WHERE id = $3", req.Text, !isAdmin, msgID)
 	if err != nil {
-		log.Printf("Ошибка обновления: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -357,7 +479,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": updated})
 }
 
-// --- WebSocket ---
+// --- WebSocket (без изменений) ---
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -366,7 +488,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	var userId string
-	// Читаем команду set-user
 	for {
 		var msg map[string]interface{}
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -386,7 +507,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	if userId == "" {
 		return
 	}
-	// Обработка new-message
 	for {
 		var msg map[string]interface{}
 		if err := conn.ReadJSON(&msg); err != nil {
@@ -417,54 +537,41 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	clientsMux.Unlock()
 }
 
-// --- Рассылка через WebSocket ---
 func broadcastMessage(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
 	for conn := range clients {
-		if err := conn.WriteJSON(map[string]interface{}{"type": "message", "payload": msg}); err != nil {
-			conn.Close()
-			delete(clients, conn)
-		}
+		conn.WriteJSON(map[string]interface{}{"type": "message", "payload": msg})
 	}
 }
 func broadcastMessageUpdated(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
 	for conn := range clients {
-		if err := conn.WriteJSON(map[string]interface{}{"type": "message-updated", "payload": msg}); err != nil {
-			conn.Close()
-			delete(clients, conn)
-		}
+		conn.WriteJSON(map[string]interface{}{"type": "message-updated", "payload": msg})
 	}
 }
 
-// --- CORS ---
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
-    return func(w http.ResponseWriter, r *http.Request) {
-        w.Header().Set("Access-Control-Allow-Origin", "*")
-        w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-        w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-        if r.Method == "OPTIONS" {
-            w.WriteHeader(http.StatusNoContent)
-            return
-        }
-        next(w, r)
-    }
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, r)
+	}
 }
 
-// --- MAIN ---
 func main() {
 	if err := godotenv.Load(); err != nil {
-		log.Println("⚠️ .env файл не найден, используются системные переменные")
+		log.Println("⚠️ .env файл не найден")
 	}
 	resendKey = os.Getenv("RESEND_API_KEY")
 	if resendKey == "" {
 		log.Fatal("❌ RESEND_API_KEY не задан")
-	}
-	adminEmail = os.Getenv("ADMIN_EMAIL")
-	if adminEmail == "" {
-		adminEmail = "admin@example.com"
 	}
 	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
 	if len(jwtSecret) == 0 {
@@ -476,6 +583,11 @@ func main() {
 
 	http.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
 	http.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
+	http.HandleFunc("/api/profile", corsMiddleware(authMiddleware(getUserProfileHandler)))
+	http.HandleFunc("/api/profile", corsMiddleware(authMiddleware(updateProfileHandler))) // PUT
+	http.HandleFunc("/api/users", corsMiddleware(authMiddleware(getUsersHandler)))
+	http.HandleFunc("/api/users/", corsMiddleware(authMiddleware(setAdminHandler))) // PUT /api/users/:id/admin
+
 	http.HandleFunc("/api/messages", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			authMiddleware(getMessagesHandler)(w, r)
@@ -485,7 +597,7 @@ func main() {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
 	}))
-	http.HandleFunc("/api/messages/", corsMiddleware(editMessageHandler))
+	http.HandleFunc("/api/messages/", corsMiddleware(authMiddleware(editMessageHandler)))
 	http.HandleFunc("/ws", wsHandler)
 
 	port := os.Getenv("PORT")

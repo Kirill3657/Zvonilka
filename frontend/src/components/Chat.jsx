@@ -1,23 +1,32 @@
 // src/components/Chat.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { useTheme } from '../ThemeContext';
+import AdminPanel from './AdminPanel';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
-const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
 
-const Chat = ({ userId, userEmail, onLogout }) => {
+const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
     const { theme, toggleTheme, lang, toggleLang, t } = useTheme();
     const [messages, setMessages] = useState([]);
     const [inputText, setInputText] = useState('');
     const [editingId, setEditingId] = useState(null);
     const [editText, setEditText] = useState('');
+    const [showAdminPanel, setShowAdminPanel] = useState(false);
     const wsRef = useRef(null);
-    const isAdmin = userEmail === ADMIN_EMAIL;
+    const [isAdmin, setIsAdmin] = useState(false);
 
-    // Загрузка сообщений и WebSocket (как раньше, с токеном)
+    // --- Получаем профиль для проверки isAdmin ---
     useEffect(() => {
-        const token = localStorage.getItem('token');
+        fetch(`${API_URL}/api/profile`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        })
+            .then(res => res.json())
+            .then(data => setIsAdmin(data.isAdmin || false))
+            .catch(() => {});
+    }, [token]);
 
+    // --- WebSocket и загрузка истории (как раньше) ---
+    useEffect(() => {
         const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
         wsRef.current = new WebSocket(wsUrl);
         wsRef.current.onopen = () => {
@@ -36,7 +45,6 @@ const Chat = ({ userId, userEmail, onLogout }) => {
         wsRef.current.onerror = () => console.error('WebSocket error');
         wsRef.current.onclose = () => console.log('WebSocket closed');
 
-        // Загрузка истории
         fetch(`${API_URL}/api/messages`, {
             headers: { 'Authorization': `Bearer ${token}` }
         })
@@ -50,8 +58,9 @@ const Chat = ({ userId, userEmail, onLogout }) => {
         return () => {
             if (wsRef.current) wsRef.current.close();
         };
-    }, [userId]);
+    }, [userId, token]);
 
+    // --- Отправка сообщения ---
     const sendMessage = () => {
         if (!inputText.trim()) return;
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -66,6 +75,7 @@ const Chat = ({ userId, userEmail, onLogout }) => {
         }
     };
 
+    // --- Редактирование ---
     const startEdit = (msg) => {
         setEditingId(msg.id);
         setEditText(msg.text);
@@ -77,7 +87,6 @@ const Chat = ({ userId, userEmail, onLogout }) => {
     const saveEdit = async () => {
         if (!editText.trim()) return;
         try {
-            const token = localStorage.getItem('token');
             const res = await fetch(`${API_URL}/api/messages/${editingId}`, {
                 method: 'PUT',
                 headers: {
@@ -94,11 +103,21 @@ const Chat = ({ userId, userEmail, onLogout }) => {
         }
     };
 
-    const handleCopyCode = (text) => {
-        navigator.clipboard.writeText(text).then(() => {
-            alert(t('copied'));
-        });
+    // --- Копирование текста ---
+    const handleCopy = (text) => {
+        navigator.clipboard.writeText(text).then(() => alert(t('copied')));
     };
+
+    // --- Выход ---
+    const handleLogout = () => {
+        localStorage.clear();
+        onLogout();
+    };
+
+    // --- Админ-панель ---
+    if (showAdminPanel) {
+        return <AdminPanel token={token} onClose={() => setShowAdminPanel(false)} />;
+    }
 
     return (
         <div className="chat-container">
@@ -110,10 +129,15 @@ const Chat = ({ userId, userEmail, onLogout }) => {
                         <button onClick={toggleTheme} title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}>
                             {theme === 'light' ? '🌙' : '☀️'}
                         </button>
-                        <button onClick={toggleLang} title={lang === 'ru' ? 'Switch to English' : 'Переключить на русский'}>
+                        <button onClick={toggleLang} title={lang === 'ru' ? 'EN' : 'RU'}>
                             {lang === 'ru' ? 'EN' : 'RU'}
                         </button>
-                        <button className="logout-btn" onClick={onLogout}>{t('logout')}</button>
+                        {isAdmin && (
+                            <button onClick={() => setShowAdminPanel(true)} className="admin-btn">
+                                ⚙️
+                            </button>
+                        )}
+                        <button className="logout-btn" onClick={handleLogout}>{t('logout')}</button>
                     </div>
                 </div>
             </header>
@@ -122,14 +146,15 @@ const Chat = ({ userId, userEmail, onLogout }) => {
                 {messages.map((msg) => {
                     const isOwn = msg.userId === userId;
                     const avatarLetter = msg.displayName?.charAt(0)?.toUpperCase() || '?';
+                    const showEdited = msg.edited && !isAdmin; // для админа не показываем
                     return (
                         <div key={msg.id} className={`message-row ${isOwn ? 'own' : ''}`}>
-                            {!isOwn && <div className="message-avatar" style={{ background: msg.userId === ADMIN_EMAIL ? '#e67e22' : 'var(--accent)' }}>{avatarLetter}</div>}
+                            {!isOwn && <div className="message-avatar" style={{ background: isAdmin ? '#e67e22' : 'var(--accent)' }}>{avatarLetter}</div>}
                             <div className="message-bubble">
                                 <div className="message-meta">
                                     <span>{msg.displayName}</span>
-                                    {msg.editedByAdmin && <span>{t('admin')}</span>}
-                                    {msg.edited && <span>{t('edited')}</span>}
+                                    {msg.editedByAdmin && <span> {t('admin')}</span>}
+                                    {showEdited && <span> {t('edited')}</span>}
                                 </div>
                                 {editingId === msg.id ? (
                                     <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
@@ -149,7 +174,7 @@ const Chat = ({ userId, userEmail, onLogout }) => {
                                             {(isOwn || isAdmin) && (
                                                 <button onClick={() => startEdit(msg)}>✏️</button>
                                             )}
-                                            <button onClick={() => handleCopyCode(msg.text)}>📋</button>
+                                            <button onClick={() => handleCopy(msg.text)}>📋</button>
                                         </div>
                                     </>
                                 )}
