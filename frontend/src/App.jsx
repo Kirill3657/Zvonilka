@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { ThemeProvider, useTheme } from './ThemeContext';
 import AuthByEmail from './components/AuthByEmail';
 import Chat from './components/Chat';
-import './style.css';
+import './css/style.css';
 
 function AppContent() {
     const [user, setUser] = useState(null);
