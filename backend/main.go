@@ -100,7 +100,7 @@ func generateCode() string {
 	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 }
 
-// --- База данных ---
+// --- База данных (с добавлением новых колонок) ---
 func initDB() error {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
@@ -116,16 +116,33 @@ func initDB() error {
 	}
 	log.Println("✅ Подключение к БД успешно")
 
+	// Создаём таблицу users (если её нет)
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE NOT NULL,
-			first_name TEXT,
-			last_name TEXT,
-			is_admin BOOLEAN DEFAULT FALSE,
-			theme TEXT DEFAULT 'light',
-			lang TEXT DEFAULT 'ru'
+			email TEXT UNIQUE NOT NULL
 		);
+	`)
+	if err != nil {
+		return fmt.Errorf("ошибка создания таблицы users: %w", err)
+	}
+
+	// Добавляем новые колонки (если их ещё нет)
+	columns := map[string]string{
+		"first_name": "TEXT",
+		"last_name":  "TEXT",
+		"is_admin":   "BOOLEAN DEFAULT FALSE",
+		"theme":      "TEXT DEFAULT 'light'",
+		"lang":       "TEXT DEFAULT 'ru'",
+	}
+	for col, def := range columns {
+		_, err = db.Exec(fmt.Sprintf("ALTER TABLE users ADD COLUMN IF NOT EXISTS %s %s;", col, def))
+		if err != nil {
+			log.Printf("⚠️ Не удалось добавить колонку %s: %v", col, err)
+		}
+	}
+	// Создаём таблицу messages
+	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS messages (
 			id TEXT PRIMARY KEY,
 			text TEXT NOT NULL,
@@ -137,9 +154,9 @@ func initDB() error {
 		);
 	`)
 	if err != nil {
-		return fmt.Errorf("ошибка создания таблиц: %w", err)
+		return fmt.Errorf("ошибка создания таблицы messages: %w", err)
 	}
-	log.Println("✅ Таблицы созданы (или уже существуют)")
+	log.Println("✅ Таблицы и колонки созданы (или уже существуют)")
 	return nil
 }
 
@@ -147,6 +164,7 @@ func initDB() error {
 
 // Отправка кода
 func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -201,7 +219,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka Team <hello@mail.zvonilka.site>", // замени на свой
+		From:    "Zvonilka Team <hello@mail.zvonilka.site>",
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -218,6 +236,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 
 // Проверка кода -> выдаёт JWT
 func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -281,7 +300,12 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 
 // Получение профиля пользователя
 func getUserProfileHandler(w http.ResponseWriter, r *http.Request) {
-	userId := r.Context().Value("userId").(string)
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
+	userId, ok := r.Context().Value("userId").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 	var user User
 	err := db.QueryRow("SELECT id, email, first_name, last_name, is_admin, theme, lang FROM users WHERE id = $1", userId).
 		Scan(&user.ID, &user.Email, &user.FirstName, &user.LastName, &user.IsAdmin, &user.Theme, &user.Lang)
@@ -295,11 +319,16 @@ func getUserProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 // Обновление профиля (имя, фамилия, тема, язык)
 func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	userId := r.Context().Value("userId").(string)
+	userId, ok := r.Context().Value("userId").(string)
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
 	var req struct {
 		FirstName string `json:"firstName"`
 		LastName  string `json:"lastName"`
@@ -323,13 +352,15 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Админ-панель ---
 func getUsersHandler(w http.ResponseWriter, r *http.Request) {
-	isAdmin := r.Context().Value("isAdmin").(bool)
-	if !isAdmin {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
+	isAdmin, ok := r.Context().Value("isAdmin").(bool)
+	if !ok || !isAdmin {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 	rows, err := db.Query("SELECT id, email, first_name, last_name, is_admin, theme, lang FROM users ORDER BY email")
 	if err != nil {
+		log.Printf("❌ Ошибка запроса users: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -345,9 +376,14 @@ func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func setAdminHandler(w http.ResponseWriter, r *http.Request) {
-	isAdmin := r.Context().Value("isAdmin").(bool)
-	if !isAdmin {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
+	isAdmin, ok := r.Context().Value("isAdmin").(bool)
+	if !ok || !isAdmin {
 		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPut {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	pathParts := strings.Split(r.URL.Path, "/")
@@ -364,7 +400,8 @@ func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = db.Exec("UPDATE users SET is_admin = $1 WHERE id = $2", req.IsAdmin, targetUserId)
 	if err != nil {
-		http.Error(w, "Ошибка обновления", http.StatusInternalServerError)
+		log.Printf("❌ Ошибка обновления is_admin: %v", err)
+		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -372,8 +409,10 @@ func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- Сообщения ---
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	rows, err := db.Query("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages ORDER BY createdAt ASC")
 	if err != nil {
+		log.Printf("❌ Ошибка запроса messages: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -392,6 +431,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -416,6 +456,7 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 		id, req.Text, req.UserId, displayName,
 	)
 	if err != nil {
+		log.Printf("❌ Ошибка вставки сообщения: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -428,6 +469,7 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func editMessageHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -454,7 +496,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Сообщение не найдено", http.StatusNotFound)
 		return
 	}
-	isAdmin := r.Context().Value("isAdmin").(bool)
+	isAdmin, _ := r.Context().Value("isAdmin").(bool)
 	isOwner := msg.UserID == req.UserId
 	if !isOwner && !isAdmin {
 		http.Error(w, "Нет прав", http.StatusForbidden)
@@ -462,6 +504,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = db.Exec("UPDATE messages SET text = $1, edited = $2 WHERE id = $3", req.Text, !isAdmin, msgID)
 	if err != nil {
+		log.Printf("❌ Ошибка обновления сообщения: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -475,6 +518,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 
 // --- WebSocket ---
 func wsHandler(w http.ResponseWriter, r *http.Request) {
+	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Print("Ошибка upgrade:", err)
@@ -578,7 +622,7 @@ func main() {
 		log.Fatal("❌ Ошибка инициализации БД:", err)
 	}
 
-	// --- Регистрация маршрутов (исправлено: без дублирования) ---
+	// --- Регистрация маршрутов ---
 	http.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
 	http.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
 
