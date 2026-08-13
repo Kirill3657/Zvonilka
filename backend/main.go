@@ -655,10 +655,7 @@ func main() {
 	})
 	handler := c.Handler(mux)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "10000"
-	}
+	port := "10000"
 	log.Printf("✅ Бэкенд запущен на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
