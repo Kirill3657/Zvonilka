@@ -17,7 +17,6 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/resend/resend-go/v2"
-	"github.com/rs/cors"
 )
 
 // --- Структуры ---
@@ -101,7 +100,7 @@ func generateCode() string {
 	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 }
 
-// --- База данных (с добавлением новых колонок) ---
+// --- База данных ---
 func initDB() error {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
@@ -159,6 +158,21 @@ func initDB() error {
 	}
 	log.Println("✅ Таблицы и колонки созданы (или уже существуют)")
 	return nil
+}
+
+// --- CORS Middleware (с логированием) ---
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("🌐 CORS: %s %s", r.Method, r.URL.Path)
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	}
 }
 
 // --- Хендлеры ---
@@ -220,7 +234,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka Team <hello@mail.zvonilka.site>",
+		From:    "Zvonilka <hello@zvonilka.site>",
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -351,7 +365,7 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// 5. Получение списка пользователей (админ)
+// 5. Получение пользователей (админ)
 func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	isAdmin, ok := r.Context().Value("isAdmin").(bool)
@@ -376,7 +390,7 @@ func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(users)
 }
 
-// 6. Назначение/снятие админа (админ)
+// 6. Назначение/снятие админа
 func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	isAdmin, ok := r.Context().Value("isAdmin").(bool)
@@ -409,7 +423,7 @@ func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// 7. Получение всех сообщений
+// 7. Получение сообщений
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	rows, err := db.Query("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages ORDER BY createdAt ASC")
@@ -432,7 +446,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
-// 8. Отправка нового сообщения (через HTTP)
+// 8. Отправка сообщения (HTTP)
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
@@ -615,49 +629,40 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/send-code", sendCodeHandler)
-	mux.HandleFunc("/api/verify-code", verifyCodeHandler)
+	// Регистрируем маршруты с CORS middleware
+	mux.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
+	mux.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
 
-	mux.HandleFunc("/api/profile", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/profile", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			getUserProfileHandler(w, r)
+			authMiddleware(getUserProfileHandler)(w, r)
 		} else if r.Method == http.MethodPut {
-			updateProfileHandler(w, r)
+			authMiddleware(updateProfileHandler)(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
+	}))
 
-	mux.HandleFunc("/api/users", getUsersHandler)
-	mux.HandleFunc("/api/users/", setAdminHandler)
+	mux.HandleFunc("/api/users", corsMiddleware(authMiddleware(getUsersHandler)))
+	mux.HandleFunc("/api/users/", corsMiddleware(authMiddleware(setAdminHandler)))
 
-	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			getMessagesHandler(w, r)
+			authMiddleware(getMessagesHandler)(w, r)
 		} else if r.Method == http.MethodPost {
 			postMessageHandler(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})
-	mux.HandleFunc("/api/messages/", editMessageHandler)
+	}))
+	mux.HandleFunc("/api/messages/", corsMiddleware(authMiddleware(editMessageHandler)))
 
-	mux.HandleFunc("/ws", wsHandler)
-
-	// CORS
-	c := cors.New(cors.Options{
-		AllowedOrigins:   []string{"*"},
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept"},
-		ExposedHeaders:   []string{"Content-Length"},
-		AllowCredentials: true,
-	})
-	handler := c.Handler(mux)
+	mux.HandleFunc("/ws", corsMiddleware(wsHandler))
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "10000"
 	}
 	log.Printf("✅ Бэкенд запущен на порту %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, handler))
+	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
