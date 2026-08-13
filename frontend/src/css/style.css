@@ -1,0 +1,323 @@
+/* src/style.css */
+:root {
+    /* Светлая тема */
+    --bg-body: #f0f2f5;
+    --bg-chat: #ffffff;
+    --bg-input: #f0f2f5;
+    --bg-message-own: #0084ff;
+    --bg-message-other: #e9ecef;
+    --text-primary: #1a1a2e;
+    --text-secondary: #555;
+    --text-own: #ffffff;
+    --text-other: #1a1a2e;
+    --border-color: #e0e0e0;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    --radius: 16px;
+    --radius-sm: 8px;
+    --accent: #0084ff;
+    --hover: #f0f2f5;
+    --header-bg: #ffffff;
+    --header-border: #e0e0e0;
+}
+
+[data-theme="dark"] {
+    --bg-body: #0e0e1a;
+    --bg-chat: #1a1a2e;
+    --bg-input: #2d2d44;
+    --bg-message-own: #4d8bf7;
+    --bg-message-other: #2d2d44;
+    --text-primary: #f0f0f0;
+    --text-secondary: #aaa;
+    --text-own: #ffffff;
+    --text-other: #f0f0f0;
+    --border-color: #444;
+    --shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --accent: #4d8bf7;
+    --hover: #2d2d44;
+    --header-bg: #1a1a2e;
+    --header-border: #444;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-body);
+    color: var(--text-primary);
+    transition: background-color 0.2s, color 0.2s;
+}
+
+/* Общие контейнеры */
+.auth-container {
+    max-width: 400px;
+    margin: 100px auto 0;
+    padding: 30px 25px 25px;
+    background-color: var(--bg-chat);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    transition: background-color 0.2s;
+}
+
+.auth-container h2 {
+    text-align: center;
+    margin-bottom: 20px;
+    font-weight: 600;
+    font-size: 24px;
+}
+
+.auth-container input {
+    width: 100%;
+    padding: 14px 16px;
+    margin-bottom: 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    color: var(--text-primary);
+    transition: border-color 0.2s;
+}
+.auth-container input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.auth-container button {
+    width: 100%;
+    padding: 14px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.auth-container button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.auth-container .toggle-link {
+    margin-top: 16px;
+    text-align: center;
+    color: var(--text-secondary);
+}
+.auth-container .toggle-link span {
+    color: var(--accent);
+    cursor: pointer;
+    font-weight: 500;
+}
+
+/* Чат */
+.chat-container {
+    max-width: 700px;
+    margin: 0 auto;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--bg-chat);
+    transition: background-color 0.2s;
+}
+
+.chat-header {
+    padding: 16px 20px;
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--header-border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.chat-header h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.chat-header .user-info {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.chat-header .user-info span {
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.chat-header .actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.chat-header .actions button {
+    background: none;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    transition: background 0.2s;
+}
+.chat-header .actions button:hover {
+    background: var(--hover);
+}
+
+.chat-header .logout-btn {
+    background: #e74c3c;
+    color: #fff;
+    border: none;
+    padding: 6px 16px;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.chat-header .logout-btn:hover {
+    opacity: 0.8;
+}
+
+/* Окно сообщений */
+.messages-window {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    background: var(--bg-body);
+    transition: background 0.2s;
+}
+
+.message-row {
+    display: flex;
+    align-items: flex-end;
+    margin-bottom: 12px;
+    gap: 8px;
+}
+
+.message-row.own {
+    flex-direction: row-reverse;
+}
+
+.message-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 14px;
+    color: #fff;
+    flex-shrink: 0;
+    background: var(--accent);
+}
+
+.message-bubble {
+    max-width: 70%;
+    padding: 10px 14px;
+    border-radius: 18px;
+    word-wrap: break-word;
+    transition: background 0.2s, color 0.2s;
+}
+
+.message-row.own .message-bubble {
+    background: var(--bg-message-own);
+    color: var(--text-own);
+    border-bottom-right-radius: 6px;
+}
+
+.message-row:not(.own) .message-bubble {
+    background: var(--bg-message-other);
+    color: var(--text-other);
+    border-bottom-left-radius: 6px;
+}
+
+.message-meta {
+    font-size: 11px;
+    opacity: 0.6;
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.message-actions {
+    display: flex;
+    gap: 4px;
+    margin-top: 4px;
+}
+.message-actions button {
+    background: none;
+    border: none;
+    font-size: 12px;
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+.message-actions button:hover {
+    opacity: 1;
+}
+
+/* Поле ввода */
+.chat-input {
+    display: flex;
+    padding: 12px 16px;
+    gap: 10px;
+    background: var(--header-bg);
+    border-top: 1px solid var(--header-border);
+    flex-shrink: 0;
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 12px 16px;
+    border-radius: 24px;
+    border: 1px solid var(--border-color);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 15px;
+    transition: border-color 0.2s;
+}
+.chat-input input:focus {
+    border-color: var(--accent);
+    outline: none;
+}
+
+.chat-input button {
+    padding: 12px 24px;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 24px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.chat-input button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.chat-input button:hover {
+    opacity: 0.9;
+}
+
+/* Адаптивность */
+@media (max-width: 600px) {
+    .auth-container {
+        margin: 20px 10px;
+        padding: 20px;
+    }
+    .chat-container {
+        height: 100vh;
+        max-width: 100%;
+    }
+    .message-bubble {
+        max-width: 85%;
+    }
+}

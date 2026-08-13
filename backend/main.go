@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -43,14 +45,54 @@ var (
 	clientsMux  sync.RWMutex
 	resendKey   string
 	adminEmail  string
+	jwtSecret   []byte
 )
+
+// --- JWT ---
+func generateToken(userId string) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"userId": userId,
+		"exp":    time.Now().Add(time.Hour * 24 * 7).Unix(),
+	})
+	return token.SignedString(jwtSecret)
+}
+
+func authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return jwtSecret, nil
+		})
+		if err != nil || !token.Valid {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		userId, ok := claims["userId"].(string)
+		if !ok {
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ctx := context.WithValue(r.Context(), "userId", userId)
+		next(w, r.WithContext(ctx))
+	}
+}
 
 // --- Генерация кода ---
 func generateCode() string {
 	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 }
 
-// --- Инициализация БД ---
+// --- База данных ---
 func initDB() error {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
@@ -61,8 +103,7 @@ func initDB() error {
 	if err != nil {
 		return fmt.Errorf("ошибка открытия БД: %w", err)
 	}
-	err = db.Ping()
-	if err != nil {
+	if err = db.Ping(); err != nil {
 		return fmt.Errorf("не могу подключиться к БД: %w", err)
 	}
 	log.Println("✅ Подключение к БД успешно")
@@ -70,7 +111,9 @@ func initDB() error {
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
-			email TEXT UNIQUE NOT NULL
+			email TEXT UNIQUE NOT NULL,
+			theme TEXT DEFAULT 'light',
+			lang TEXT DEFAULT 'ru'
 		);
 		CREATE TABLE IF NOT EXISTS messages (
 			id TEXT PRIMARY KEY,
@@ -89,7 +132,9 @@ func initDB() error {
 	return nil
 }
 
-// --- Отправка кода ---
+// --- Хендлеры ---
+
+// Отправка кода
 func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -107,96 +152,40 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	codesMutex.Unlock()
 
 	client := resend.NewClient(resendKey)
-
-	// --- КРАСИВЫЙ HTML-ШАБЛОН ПИСЬМА ---
 	htmlContent := fmt.Sprintf(`
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Код подтверждения</title>
-  <style>
-    body {
-      font-family: 'Segoe UI', Arial, sans-serif;
-      background: #f0f2f5;
-      margin: 0;
-      padding: 20px;
-    }
-    .container {
-      max-width: 480px;
-      margin: 0 auto;
-      background: #ffffff;
-      padding: 40px 30px;
-      border-radius: 16px;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.06);
-      text-align: center;
-    }
-    .logo {
-      font-size: 48px;
-      margin-bottom: 10px;
-    }
-    h1 {
-      font-size: 24px;
-      color: #1a1a2e;
-      margin: 0 0 8px 0;
-      font-weight: 700;
-    }
-    .sub {
-      color: #555;
-      font-size: 16px;
-      margin-bottom: 30px;
-    }
-    .code {
-      font-size: 52px;
-      font-weight: 700;
-      letter-spacing: 8px;
-      color: #1a73e8;
-      background: #e8f0fe;
-      padding: 12px 20px;
-      border-radius: 12px;
-      display: inline-block;
-      margin: 20px 0;
-      font-family: 'Courier New', monospace;
-    }
-    .info {
-      font-size: 14px;
-      color: #666;
-      margin: 20px 0 30px;
-    }
-    .footer {
-      font-size: 13px;
-      color: #aaa;
-      border-top: 1px solid #eee;
-      padding-top: 20px;
-      margin-top: 20px;
-    }
-    .footer a {
-      color: #1a73e8;
-      text-decoration: none;
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="logo">📱</div>
-    <h1>Zvonilka</h1>
-    <p class="sub">Ваш код подтверждения</p>
-    <div class="code">%s</div>
-    <p class="info">
-      Код действителен <strong>5 минут</strong>.<br>
-      Если вы не запрашивали код — просто проигнорируйте это письмо.
-    </p>
-    <div class="footer">
-      Команда Zvonilka &mdash; <a href="https://zvonilka.site">zvonilka.site</a>
-    </div>
-  </div>
-</body>
-</html>
-`, code)
+	<!DOCTYPE html>
+	<html>
+	<head>
+	  <meta charset="UTF-8">
+	  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+	  <title>Код подтверждения</title>
+	  <style>
+		body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; }
+		.container { max-width: 480px; margin: 0 auto; background: #ffffff; padding: 40px 30px; border-radius: 16px; box-shadow: 0 8px 24px rgba(0,0,0,0.06); text-align: center; }
+		.logo { font-size: 48px; margin-bottom: 10px; }
+		h1 { font-size: 24px; color: #1a1a2e; margin: 0 0 8px 0; font-weight: 700; }
+		.sub { color: #555; font-size: 16px; margin-bottom: 30px; }
+		.code { font-size: 52px; font-weight: 700; letter-spacing: 8px; color: #1a73e8; background: #e8f0fe; padding: 12px 20px; border-radius: 12px; display: inline-block; margin: 20px 0; font-family: 'Courier New', monospace; }
+		.info { font-size: 14px; color: #666; margin: 20px 0 30px; }
+		.footer { font-size: 13px; color: #aaa; border-top: 1px solid #eee; padding-top: 20px; margin-top: 20px; }
+		.footer a { color: #1a73e8; text-decoration: none; }
+	  </style>
+	</head>
+	<body>
+	  <div class="container">
+		<div class="logo">📱</div>
+		<h1>Zvonilka</h1>
+		<p class="sub">Ваш код подтверждения</p>
+		<div class="code">%s</div>
+		<p class="info">Код действителен <strong>5 минут</strong>.<br>Если вы не запрашивали код — просто проигнорируйте это письмо.</p>
+		<div class="footer">Команда Zvonilka &mdash; <a href="https://zvonilka.site">zvonilka.site</a></div>
+	  </div>
+	</body>
+	</html>
+	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka Team <hello@mail.zvonilka.site>", // если домен zvonilka.site верифицирован, иначе замени на hello@mail.zvonilka.site
+		From:    "Zvonilka <hello@zvonilka.site>", // замени на свой домен
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -211,7 +200,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
-// --- Проверка кода ---
+// Проверка кода -> выдаёт JWT
 func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -248,11 +237,16 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	userId := req.Email
 	_, _ = db.Exec("INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING", userId, req.Email)
 
+	token, err := generateToken(userId)
+	if err != nil {
+		http.Error(w, "Ошибка генерации токена", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "userId": userId})
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "userId": userId, "token": token})
 }
 
-// --- Получить все сообщения ---
+// Получение всех сообщений (защищено JWT)
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -260,7 +254,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := db.Query("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages ORDER BY createdAt ASC")
 	if err != nil {
-		log.Printf("❌ Ошибка запроса к БД: %v", err)
+		log.Printf("❌ Ошибка запроса: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
@@ -268,12 +262,9 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	var messages []Message
 	for rows.Next() {
 		var m Message
-		err = rows.Scan(&m.ID, &m.Text, &m.UserID, &m.DisplayName, &m.CreatedAt, &m.Edited, &m.EditedByAdmin)
-		if err != nil {
-			log.Printf("❌ Ошибка сканирования: %v", err)
-			continue
+		if err := rows.Scan(&m.ID, &m.Text, &m.UserID, &m.DisplayName, &m.CreatedAt, &m.Edited, &m.EditedByAdmin); err == nil {
+			messages = append(messages, m)
 		}
-		messages = append(messages, m)
 	}
 	if messages == nil {
 		messages = []Message{}
@@ -282,7 +273,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
-// --- Отправить новое сообщение (polling) ---
+// Отправка нового сообщения (для polling)
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -293,8 +284,7 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 		Text        string `json:"text"`
 		DisplayName string `json:"displayName"`
 	}
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil || req.UserId == "" || req.Text == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.UserId == "" || req.Text == "" {
 		http.Error(w, "Нет данных", http.StatusBadRequest)
 		return
 	}
@@ -303,29 +293,24 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if displayName == "" {
 		displayName = strings.Split(req.UserId, "@")[0]
 	}
-	_, err = db.Exec(
+	_, err := db.Exec(
 		"INSERT INTO messages (id, text, userId, displayName, createdAt) VALUES ($1, $2, $3, $4, NOW())",
 		id, req.Text, req.UserId, displayName,
 	)
 	if err != nil {
-		log.Printf("❌ Ошибка вставки: %v", err)
+		log.Printf("Ошибка вставки: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
 	var msg Message
-	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
+	db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
-	if err != nil {
-		log.Printf("❌ Ошибка получения сообщения: %v", err)
-		http.Error(w, "Ошибка получения сообщения", http.StatusInternalServerError)
-		return
-	}
 	broadcastMessage(msg)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": msg})
 }
 
-// --- Редактирование сообщения ---
+// Редактирование сообщения
 func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -341,13 +326,12 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		Text   string `json:"text"`
 		UserId string `json:"userId"`
 	}
-	err := json.NewDecoder(r.Body).Decode(&req)
-	if err != nil || req.Text == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Text == "" {
 		http.Error(w, "Текст обязателен", http.StatusBadRequest)
 		return
 	}
 	var msg Message
-	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
+	err := db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
 	if err != nil {
 		http.Error(w, "Сообщение не найдено", http.StatusNotFound)
@@ -361,18 +345,13 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	_, err = db.Exec("UPDATE messages SET text = $1, edited = TRUE WHERE id = $2", req.Text, msgID)
 	if err != nil {
-		log.Printf("❌ Ошибка обновления: %v", err)
+		log.Printf("Ошибка обновления: %v", err)
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
 	var updated Message
-	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
+	db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&updated.ID, &updated.Text, &updated.UserID, &updated.DisplayName, &updated.CreatedAt, &updated.Edited, &updated.EditedByAdmin)
-	if err != nil {
-		log.Printf("❌ Ошибка получения обновлённого сообщения: %v", err)
-		http.Error(w, "Ошибка получения обновлённого сообщения", http.StatusInternalServerError)
-		return
-	}
 	broadcastMessageUpdated(updated)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": updated})
@@ -386,13 +365,12 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
-
 	var userId string
+	// Читаем команду set-user
 	for {
 		var msg map[string]interface{}
-		err := conn.ReadJSON(&msg)
-		if err != nil {
-			break
+		if err := conn.ReadJSON(&msg); err != nil {
+			return
 		}
 		if cmd, ok := msg["command"]; ok && cmd == "set-user" {
 			if uid, ok := msg["userId"].(string); ok {
@@ -408,11 +386,10 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	if userId == "" {
 		return
 	}
-
+	// Обработка new-message
 	for {
 		var msg map[string]interface{}
-		err := conn.ReadJSON(&msg)
-		if err != nil {
+		if err := conn.ReadJSON(&msg); err != nil {
 			break
 		}
 		if cmd, ok := msg["command"]; ok && cmd == "new-message" {
@@ -425,21 +402,13 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			if displayName == "" {
 				displayName = strings.Split(userId, "@")[0]
 			}
-			_, err = db.Exec(
+			db.Exec(
 				"INSERT INTO messages (id, text, userId, displayName, createdAt) VALUES ($1, $2, $3, $4, NOW())",
 				id, text, userId, displayName,
 			)
-			if err != nil {
-				log.Printf("❌ Ошибка вставки (ws): %v", err)
-				continue
-			}
 			var msgData Message
-			err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
+			db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
 				Scan(&msgData.ID, &msgData.Text, &msgData.UserID, &msgData.DisplayName, &msgData.CreatedAt, &msgData.Edited, &msgData.EditedByAdmin)
-			if err != nil {
-				log.Printf("❌ Ошибка получения сообщения (ws): %v", err)
-				continue
-			}
 			broadcastMessage(msgData)
 		}
 	}
@@ -453,26 +422,17 @@ func broadcastMessage(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
 	for conn := range clients {
-		err := conn.WriteJSON(map[string]interface{}{
-			"type":    "message",
-			"payload": msg,
-		})
-		if err != nil {
+		if err := conn.WriteJSON(map[string]interface{}{"type": "message", "payload": msg}); err != nil {
 			conn.Close()
 			delete(clients, conn)
 		}
 	}
 }
-
 func broadcastMessageUpdated(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
 	for conn := range clients {
-		err := conn.WriteJSON(map[string]interface{}{
-			"type":    "message-updated",
-			"payload": msg,
-		})
-		if err != nil {
+		if err := conn.WriteJSON(map[string]interface{}{"type": "message-updated", "payload": msg}); err != nil {
 			conn.Close()
 			delete(clients, conn)
 		}
@@ -495,8 +455,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 // --- MAIN ---
 func main() {
-	err := godotenv.Load()
-	if err != nil {
+	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ .env файл не найден, используются системные переменные")
 	}
 	resendKey = os.Getenv("RESEND_API_KEY")
@@ -507,8 +466,11 @@ func main() {
 	if adminEmail == "" {
 		adminEmail = "admin@example.com"
 	}
-	err = initDB()
-	if err != nil {
+	jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+	if len(jwtSecret) == 0 {
+		log.Fatal("❌ JWT_SECRET не задан")
+	}
+	if err := initDB(); err != nil {
 		log.Fatal("❌ Ошибка инициализации БД:", err)
 	}
 
@@ -516,7 +478,7 @@ func main() {
 	http.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
 	http.HandleFunc("/api/messages", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			getMessagesHandler(w, r)
+			authMiddleware(getMessagesHandler)(w, r)
 		} else if r.Method == http.MethodPost {
 			postMessageHandler(w, r)
 		} else {

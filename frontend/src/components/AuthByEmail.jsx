@@ -1,109 +1,103 @@
 // src/components/AuthByEmail.jsx
 import React, { useState } from 'react';
+import { useTheme } from '../ThemeContext';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 const AuthByEmail = ({ onAuthSuccess }) => {
-  const [email, setEmail] = useState('');
-  const [code, setCode] = useState('');
-  const [isCodeSent, setIsCodeSent] = useState(false);
-  const [loading, setLoading] = useState(false);
+    const { t, theme } = useTheme();
+    const [email, setEmail] = useState('');
+    const [code, setCode] = useState('');
+    const [isCodeSent, setIsCodeSent] = useState(false);
+    const [loading, setLoading] = useState(false);
 
-  // Отправка кода
-  const handleSendCode = async () => {
-    if (!email) return alert('Введите email');
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/api/send-code`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setIsCodeSent(true);
-        alert('Код отправлен на почту!');
-      } else {
-        alert('Ошибка: ' + data.error);
-      }
-    } catch (error) {
-      alert('Не удалось подключиться к серверу');
-    } finally {
-      setLoading(false);
-    }
-  };
+    const handleSendCode = async () => {
+        if (!email) return alert(t('error'));
+        setLoading(true);
+        try {
+            const res = await fetch(`${API_URL}/api/send-code`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                setIsCodeSent(true);
+                alert(t('codeSent') + ' ' + email);
+            } else {
+                alert(t('error') + ': ' + data.error);
+            }
+        } catch (error) {
+            alert(t('reconnect'));
+        } finally {
+            setLoading(false);
+        }
+    };
 
-  // Проверка кода (с логами)
-  const handleVerifyCode = async () => {
-    console.log('🔥 handleVerifyCode вызвана!');
-    console.log('📤 email:', email);
-    console.log('📤 code:', code);
-    if (!code) return alert('Введите код');
-    setLoading(true);
-    try {
-      const res = await fetch(`${API_URL}/api/verify-code`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, code }),
-      });
-      console.log('📥 статус ответа:', res.status);
-      const data = await res.json();
-      console.log('📥 ответ сервера:', data);
-      if (data.success) {
-        alert('Код верный! Вход выполнен.');
-        onAuthSuccess(email, data.userId);
-      } else {
-        alert('Ошибка: ' + data.error);
-      }
-    } catch (error) {
-      console.error('❌ Ошибка запроса:', error);
-      alert('Ошибка соединения с сервером');
-    } finally {
-      setLoading(false);
-    }
-  };
+    const handleVerifyCode = async () => {
+        if (!code) return alert(t('error'));
+        setLoading(true);
+        try {
+            const res = await fetch(`${API_URL}/api/verify-code`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, code }),
+            });
+            const data = await res.json();
+            if (data.success) {
+                onAuthSuccess(email, data.userId, data.token);
+            } else {
+                alert(t('error') + ': ' + data.error);
+            }
+        } catch (error) {
+            alert(t('reconnect'));
+        } finally {
+            setLoading(false);
+        }
+    };
 
-  return (
-    <div style={{ maxWidth: 400, margin: '100px auto', padding: 20, border: '1px solid #ccc', borderRadius: 8 }}>
-      <h2 style={{ textAlign: 'center' }}>Вход в Zvonilka</h2>
-      {!isCodeSent ? (
-        <>
-          <input
-            type="email"
-            placeholder="Введи свою почту"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            style={{ width: '100%', padding: 10, marginBottom: 10, borderRadius: 4, border: '1px solid #ccc' }}
-          />
-          <button
-            onClick={handleSendCode}
-            disabled={loading}
-            style={{ width: '100%', padding: 10, background: '#007bff', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-          >
-            {loading ? 'Отправка...' : 'Отправить код'}
-          </button>
-        </>
-      ) : (
-        <>
-          <p style={{ textAlign: 'center' }}>Код отправлен на {email}</p>
-          <input
-            type="text"
-            placeholder="Введи код из письма"
-            value={code}
-            onChange={(e) => setCode(e.target.value)}
-            style={{ width: '100%', padding: 10, marginBottom: 10, borderRadius: 4, border: '1px solid #ccc' }}
-          />
-          <button
-            onClick={handleVerifyCode}
-            disabled={loading}
-            style={{ width: '100%', padding: 10, background: '#28a745', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }}
-          >
-            {loading ? 'Проверка...' : 'Подтвердить'}
-          </button>
-        </>
-      )}
-    </div>
-  );
+    return (
+        <div className="auth-container">
+            <h2>{isCodeSent ? t('login') : t('register')}</h2>
+            {!isCodeSent ? (
+                <>
+                    <input
+                        type="email"
+                        placeholder={t('emailPlaceholder')}
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                    />
+                    <button onClick={handleSendCode} disabled={loading}>
+                        {loading ? '...' : t('sendCode')}
+                    </button>
+                </>
+            ) : (
+                <>
+                    <p style={{ textAlign: 'center', marginBottom: 10 }}>
+                        {t('codeSent')} {email}
+                    </p>
+                    <input
+                        type="text"
+                        placeholder={t('codePlaceholder')}
+                        value={code}
+                        onChange={(e) => setCode(e.target.value)}
+                    />
+                    <button onClick={handleVerifyCode} disabled={loading}>
+                        {loading ? '...' : t('verifyCode')}
+                    </button>
+                </>
+            )}
+            <div className="toggle-link">
+                {isCodeSent ? (
+                    <span onClick={() => setIsCodeSent(false)}>← {t('register')}</span>
+                ) : (
+                    <span onClick={() => alert('Уже есть аккаунт? Введи почту и получи код')}>
+                        {t('login')}
+                    </span>
+                )}
+            </div>
+        </div>
+    );
 };
 
 export default AuthByEmail;
