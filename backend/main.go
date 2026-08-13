@@ -39,7 +39,7 @@ var (
 	codesStore  = make(map[string]CodeRecord)
 	codesMutex  sync.RWMutex
 	upgrader    = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
-	clients     = make(map[*websocket.Conn]string) // conn -> userId
+	clients     = make(map[*websocket.Conn]string)
 	clientsMux  sync.RWMutex
 	resendKey   string
 	adminEmail  string
@@ -50,7 +50,7 @@ func generateCode() string {
 	return fmt.Sprintf("%06d", time.Now().UnixNano()%1000000)
 }
 
-// --- Инициализация БД (создание таблиц) ---
+// --- Инициализация БД ---
 func initDB() error {
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
@@ -67,7 +67,6 @@ func initDB() error {
 	}
 	log.Println("✅ Подключение к БД успешно")
 
-	// Создаём таблицы
 	_, err = db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
@@ -90,9 +89,7 @@ func initDB() error {
 	return nil
 }
 
-// --- Хендлеры ---
-
-// 1. Отправка кода
+// --- Отправка кода ---
 func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -110,14 +107,99 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	codesMutex.Unlock()
 
 	client := resend.NewClient(resendKey)
+
+	// --- КРАСИВЫЙ HTML-ШАБЛОН ПИСЬМА ---
+	htmlContent := fmt.Sprintf(`
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Код подтверждения</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #f0f2f5;
+      margin: 0;
+      padding: 20px;
+    }
+    .container {
+      max-width: 480px;
+      margin: 0 auto;
+      background: #ffffff;
+      padding: 40px 30px;
+      border-radius: 16px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+      text-align: center;
+    }
+    .logo {
+      font-size: 48px;
+      margin-bottom: 10px;
+    }
+    h1 {
+      font-size: 24px;
+      color: #1a1a2e;
+      margin: 0 0 8px 0;
+      font-weight: 700;
+    }
+    .sub {
+      color: #555;
+      font-size: 16px;
+      margin-bottom: 30px;
+    }
+    .code {
+      font-size: 52px;
+      font-weight: 700;
+      letter-spacing: 8px;
+      color: #1a73e8;
+      background: #e8f0fe;
+      padding: 12px 20px;
+      border-radius: 12px;
+      display: inline-block;
+      margin: 20px 0;
+      font-family: 'Courier New', monospace;
+    }
+    .info {
+      font-size: 14px;
+      color: #666;
+      margin: 20px 0 30px;
+    }
+    .footer {
+      font-size: 13px;
+      color: #aaa;
+      border-top: 1px solid #eee;
+      padding-top: 20px;
+      margin-top: 20px;
+    }
+    .footer a {
+      color: #1a73e8;
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">📱</div>
+    <h1>Zvonilka</h1>
+    <p class="sub">Ваш код подтверждения</p>
+    <div class="code">%s</div>
+    <p class="info">
+      Код действителен <strong>5 минут</strong>.<br>
+      Если вы не запрашивали код — просто проигнорируйте это письмо.
+    </p>
+    <div class="footer">
+      Команда Zvonilka &mdash; <a href="https://zvonilka.site">zvonilka.site</a>
+    </div>
+  </div>
+</body>
+</html>
+`, code)
+
 	params := &resend.SendEmailRequest{
-		From:    "onboarding@resend.dev",
+		From:    "Zvonilka Team <hello@mail.zvonilka.site>", // если домен zvonilka.site верифицирован, иначе замени на hello@mail.zvonilka.site
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
-		Html: fmt.Sprintf(`
-			<h2>Ваш код: %s</h2>
-			<p>Действует 5 минут.</p>
-		`, code),
+		Html:    htmlContent,
 	}
 	_, err = client.Emails.Send(params)
 	if err != nil {
@@ -129,7 +211,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
-// 2. Проверка кода
+// --- Проверка кода ---
 func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -164,14 +246,13 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	codesMutex.Unlock()
 
 	userId := req.Email
-	// Сохраняем пользователя
 	_, _ = db.Exec("INSERT INTO users (id, email) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING", userId, req.Email)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "userId": userId})
 }
 
-// 3. Получить все сообщения (ИСПРАВЛЕНО: возвращает [] вместо null)
+// --- Получить все сообщения ---
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -184,8 +265,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-
-	messages := []Message{} // инициализируем пустым срезом, а не nil
+	var messages []Message
 	for rows.Next() {
 		var m Message
 		err = rows.Scan(&m.ID, &m.Text, &m.UserID, &m.DisplayName, &m.CreatedAt, &m.Edited, &m.EditedByAdmin)
@@ -195,7 +275,6 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		messages = append(messages, m)
 	}
-	// Если по каким-то причинам messages всё ещё nil (чего быть не должно), явно делаем пустым
 	if messages == nil {
 		messages = []Message{}
 	}
@@ -203,7 +282,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
-// 4. Отправить новое сообщение (для polling)
+// --- Отправить новое сообщение (polling) ---
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -233,7 +312,6 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
-	// Получаем вставленное сообщение
 	var msg Message
 	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", id).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
@@ -242,14 +320,12 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Ошибка получения сообщения", http.StatusInternalServerError)
 		return
 	}
-	// Отправляем через WebSocket всем клиентам
 	broadcastMessage(msg)
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": msg})
 }
 
-// 5. Редактирование сообщения
+// --- Редактирование сообщения ---
 func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -270,7 +346,6 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Текст обязателен", http.StatusBadRequest)
 		return
 	}
-	// Проверяем существование сообщения
 	var msg Message
 	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
@@ -290,7 +365,6 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
 		return
 	}
-	// Получаем обновлённое
 	var updated Message
 	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&updated.ID, &updated.Text, &updated.UserID, &updated.DisplayName, &updated.CreatedAt, &updated.Edited, &updated.EditedByAdmin)
@@ -300,7 +374,6 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	broadcastMessageUpdated(updated)
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": updated})
 }
@@ -314,7 +387,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Ожидаем сообщение "set-user"
 	var userId string
 	for {
 		var msg map[string]interface{}
@@ -337,7 +409,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Обработка сообщений от клиента
 	for {
 		var msg map[string]interface{}
 		err := conn.ReadJSON(&msg)
@@ -372,7 +443,6 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 			broadcastMessage(msgData)
 		}
 	}
-
 	clientsMux.Lock()
 	delete(clients, conn)
 	clientsMux.Unlock()
@@ -409,7 +479,7 @@ func broadcastMessageUpdated(msg Message) {
 	}
 }
 
-// --- Middleware CORS ---
+// --- CORS ---
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -423,7 +493,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// --- Главная ---
+// --- MAIN ---
 func main() {
 	err := godotenv.Load()
 	if err != nil {
