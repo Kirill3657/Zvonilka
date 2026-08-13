@@ -17,6 +17,7 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/resend/resend-go/v2"
+	"github.com/rs/cors"
 )
 
 // --- Структуры ---
@@ -162,7 +163,7 @@ func initDB() error {
 
 // --- Хендлеры ---
 
-// Отправка кода
+// 1. Отправка кода
 func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
@@ -219,7 +220,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka Team <hello@mail.zvonilka.site>",
+		From:    "Zvonilka <hello@zvonilka.site>",
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -234,7 +235,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]bool{"success": true})
 }
 
-// Проверка кода -> выдаёт JWT
+// 2. Проверка кода
 func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
@@ -298,7 +299,7 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Получение профиля пользователя
+// 3. Получение профиля
 func getUserProfileHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	userId, ok := r.Context().Value("userId").(string)
@@ -317,7 +318,7 @@ func getUserProfileHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(user)
 }
 
-// Обновление профиля (имя, фамилия, тема, язык)
+// 4. Обновление профиля
 func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPut {
@@ -350,7 +351,7 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// --- Админ-панель ---
+// 5. Получение списка пользователей (админ)
 func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	isAdmin, ok := r.Context().Value("isAdmin").(bool)
@@ -375,6 +376,7 @@ func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(users)
 }
 
+// 6. Назначение/снятие админа (админ)
 func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	isAdmin, ok := r.Context().Value("isAdmin").(bool)
@@ -407,7 +409,7 @@ func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// --- Сообщения ---
+// 7. Получение всех сообщений
 func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	rows, err := db.Query("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages ORDER BY createdAt ASC")
@@ -430,6 +432,7 @@ func getMessagesHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(messages)
 }
 
+// 8. Отправка нового сообщения (через HTTP)
 func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPost {
@@ -468,6 +471,7 @@ func postMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": msg})
 }
 
+// 9. Редактирование сообщения
 func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	if r.Method != http.MethodPut {
@@ -516,7 +520,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": updated})
 }
 
-// --- WebSocket ---
+// 10. WebSocket
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	log.Printf("📨 %s %s", r.Method, r.URL.Path)
 	conn, err := upgrader.Upgrade(w, r, nil)
@@ -575,6 +579,7 @@ func wsHandler(w http.ResponseWriter, r *http.Request) {
 	clientsMux.Unlock()
 }
 
+// --- Broadcast ---
 func broadcastMessage(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
@@ -588,20 +593,6 @@ func broadcastMessageUpdated(msg Message) {
 	defer clientsMux.RUnlock()
 	for conn := range clients {
 		conn.WriteJSON(map[string]interface{}{"type": "message-updated", "payload": msg})
-	}
-}
-
-// --- CORS ---
-func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		next(w, r)
 	}
 }
 
@@ -622,12 +613,12 @@ func main() {
 		log.Fatal("❌ Ошибка инициализации БД:", err)
 	}
 
-	// --- Регистрация маршрутов ---
-	http.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
-	http.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
+	mux := http.NewServeMux()
 
-	// Профиль – объединяем GET и PUT
-	http.HandleFunc("/api/profile", corsMiddleware(authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/send-code", sendCodeHandler)
+	mux.HandleFunc("/api/verify-code", verifyCodeHandler)
+
+	mux.HandleFunc("/api/profile", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			getUserProfileHandler(w, r)
 		} else if r.Method == http.MethodPut {
@@ -635,31 +626,38 @@ func main() {
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	})))
+	})
 
-	// Админские маршруты
-	http.HandleFunc("/api/users", corsMiddleware(authMiddleware(getUsersHandler)))
-	http.HandleFunc("/api/users/", corsMiddleware(authMiddleware(setAdminHandler)))
+	mux.HandleFunc("/api/users", getUsersHandler)
+	mux.HandleFunc("/api/users/", setAdminHandler)
 
-	// Сообщения
-	http.HandleFunc("/api/messages", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
-			authMiddleware(getMessagesHandler)(w, r)
+			getMessagesHandler(w, r)
 		} else if r.Method == http.MethodPost {
 			postMessageHandler(w, r)
 		} else {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		}
-	}))
-	http.HandleFunc("/api/messages/", corsMiddleware(authMiddleware(editMessageHandler)))
+	})
+	mux.HandleFunc("/api/messages/", editMessageHandler)
 
-	// WebSocket
-	http.HandleFunc("/ws", wsHandler)
+	mux.HandleFunc("/ws", wsHandler)
+
+	// CORS
+	c := cors.New(cors.Options{
+		AllowedOrigins:   []string{"*"},
+		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders:   []string{"Content-Type", "Authorization", "Accept"},
+		ExposedHeaders:   []string{"Content-Length"},
+		AllowCredentials: true,
+	})
+	handler := c.Handler(mux)
 
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "10000"
 	}
 	log.Printf("✅ Бэкенд запущен на порту %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	log.Fatal(http.ListenAndServe(":"+port, handler))
 }
