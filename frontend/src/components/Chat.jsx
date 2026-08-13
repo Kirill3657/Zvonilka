@@ -4,8 +4,8 @@ import React, { useState, useEffect, useRef } from 'react';
 // HTTP-запросы идут через этот URL (может быть Worker или прямой бэкенд)
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
-// Адрес WebSocket — напрямую к бэкенду, минуя Worker
-const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
+// Адрес WebSocket — напрямую к бэкенду
+const wsUrl = 'wss://zvonilka.relaxdev.ru/ws';
 
 const ADMIN_EMAIL = 'wwwkirillstarcraft@gmail.com';
 
