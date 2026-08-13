@@ -3,14 +3,12 @@ import React, { useState, useEffect } from 'react';
 import { ThemeProvider, useTheme } from './ThemeContext';
 import AuthByEmail from './components/AuthByEmail';
 import Chat from './components/Chat';
-import './css/style.css';
+import './style.css';
 
 function AppContent() {
-    const { t } = useTheme();
     const [user, setUser] = useState(null);
 
     useEffect(() => {
-        // Проверяем, есть ли сохранённый токен
         const token = localStorage.getItem('token');
         const userId = localStorage.getItem('userId');
         const userEmail = localStorage.getItem('userEmail');
