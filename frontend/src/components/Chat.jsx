@@ -1,7 +1,6 @@
 // src/components/Chat.jsx
 import React, { useState, useEffect, useRef } from 'react';
 import { useTheme } from '../ThemeContext';
-import AdminPanel from './AdminPanel';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
@@ -11,21 +10,9 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
     const [inputText, setInputText] = useState('');
     const [editingId, setEditingId] = useState(null);
     const [editText, setEditText] = useState('');
-    const [showAdminPanel, setShowAdminPanel] = useState(false);
     const wsRef = useRef(null);
-    const [isAdmin, setIsAdmin] = useState(false);
 
-    // --- Получаем профиль для проверки isAdmin ---
-    useEffect(() => {
-        fetch(`${API_URL}/api/profile`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-        })
-            .then(res => res.json())
-            .then(data => setIsAdmin(data.isAdmin || false))
-            .catch(() => {});
-    }, [token]);
-
-    // --- WebSocket и загрузка истории (как раньше) ---
+    // --- WebSocket и загрузка истории ---
     useEffect(() => {
         const wsUrl = API_URL.replace(/^http/, 'ws') + '/ws';
         wsRef.current = new WebSocket(wsUrl);
@@ -40,7 +27,7 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
                 } else if (data.type === 'message-updated') {
                     setMessages(prev => prev.map(m => m.id === data.payload.id ? data.payload : m));
                 }
-            } catch (e) {}
+            } catch (e) { console.error('WebSocket parse error', e); }
         };
         wsRef.current.onerror = () => console.error('WebSocket error');
         wsRef.current.onclose = () => console.log('WebSocket closed');
@@ -60,7 +47,7 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
         };
     }, [userId, token]);
 
-    // --- Отправка сообщения ---
+    // --- Отправка ---
     const sendMessage = () => {
         if (!inputText.trim()) return;
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -103,7 +90,6 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
         }
     };
 
-    // --- Копирование текста ---
     const handleCopy = (text) => {
         navigator.clipboard.writeText(text).then(() => alert(t('copied')));
     };
@@ -114,10 +100,10 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
         onLogout();
     };
 
-    // --- Админ-панель ---
-    if (showAdminPanel) {
-        return <AdminPanel token={token} onClose={() => setShowAdminPanel(false)} />;
-    }
+    // --- Открыть админ-панель на субдомене ---
+    const openAdminPanel = () => {
+        window.open('https://admin.zvonilka.site', '_blank');
+    };
 
     return (
         <div className="chat-container">
@@ -133,7 +119,7 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
                             {lang === 'ru' ? 'EN' : 'RU'}
                         </button>
                         {isAdmin && (
-                            <button onClick={() => setShowAdminPanel(true)} className="admin-btn">
+                            <button onClick={openAdminPanel} className="admin-btn" title="Админ-панель">
                                 ⚙️
                             </button>
                         )}
@@ -146,7 +132,8 @@ const Chat = ({ userId, userEmail, token, onLogout, isAdmin }) => {
                 {messages.map((msg) => {
                     const isOwn = msg.userId === userId;
                     const avatarLetter = msg.displayName?.charAt(0)?.toUpperCase() || '?';
-                    const showEdited = msg.edited && !isAdmin; // для админа не показываем
+                    // Для админа не показываем пометку "ред."
+                    const showEdited = msg.edited && !isAdmin;
                     return (
                         <div key={msg.id} className={`message-row ${isOwn ? 'own' : ''}`}>
                             {!isOwn && <div className="message-avatar" style={{ background: isAdmin ? '#e67e22' : 'var(--accent)' }}>{avatarLetter}</div>}

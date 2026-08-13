@@ -201,7 +201,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka Team <hello@mail.zvonilka.site>", // замени на свой
+		From:    "Zvonilka <hello@zvonilka.site>", // замени на свой
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
@@ -251,11 +251,9 @@ func verifyCodeHandler(w http.ResponseWriter, r *http.Request) {
 	codesMutex.Unlock()
 
 	userId := req.Email
-	// Проверяем, существует ли пользователь
 	var isAdmin bool
 	err = db.QueryRow("SELECT is_admin FROM users WHERE id = $1", userId).Scan(&isAdmin)
 	if err == sql.ErrNoRows {
-		// Создаём нового пользователя (без имени)
 		_, err = db.Exec("INSERT INTO users (id, email, is_admin) VALUES ($1, $2, $3)", userId, req.Email, false)
 		if err != nil {
 			http.Error(w, "Ошибка создания пользователя", http.StatusInternalServerError)
@@ -323,7 +321,7 @@ func updateProfileHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-// --- Получение списка пользователей (только админ) ---
+// --- Админ-панель ---
 func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	isAdmin := r.Context().Value("isAdmin").(bool)
 	if !isAdmin {
@@ -346,20 +344,18 @@ func getUsersHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(users)
 }
 
-// --- Назначение админа (только админ) ---
 func setAdminHandler(w http.ResponseWriter, r *http.Request) {
 	isAdmin := r.Context().Value("isAdmin").(bool)
 	if !isAdmin {
 		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
-	// Извлекаем userId из пути
 	pathParts := strings.Split(r.URL.Path, "/")
-	if len(pathParts) < 4 {
+	if len(pathParts) < 5 {
 		http.Error(w, "Неверный путь", http.StatusBadRequest)
 		return
 	}
-	targetUserId := pathParts[3]
+	targetUserId := pathParts[4]
 	var req struct{ IsAdmin bool }
 	err := json.NewDecoder(r.Body).Decode(&req)
 	if err != nil {
@@ -451,7 +447,6 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Текст обязателен", http.StatusBadRequest)
 		return
 	}
-	// Проверяем права
 	var msg Message
 	err = db.QueryRow("SELECT id, text, userId, displayName, createdAt, edited, editedByAdmin FROM messages WHERE id = $1", msgID).
 		Scan(&msg.ID, &msg.Text, &msg.UserID, &msg.DisplayName, &msg.CreatedAt, &msg.Edited, &msg.EditedByAdmin)
@@ -465,7 +460,6 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Нет прав", http.StatusForbidden)
 		return
 	}
-	// Обновляем
 	_, err = db.Exec("UPDATE messages SET text = $1, edited = $2 WHERE id = $3", req.Text, !isAdmin, msgID)
 	if err != nil {
 		http.Error(w, "Ошибка БД", http.StatusInternalServerError)
@@ -479,7 +473,7 @@ func editMessageHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": updated})
 }
 
-// --- WebSocket (без изменений) ---
+// --- WebSocket ---
 func wsHandler(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -544,6 +538,7 @@ func broadcastMessage(msg Message) {
 		conn.WriteJSON(map[string]interface{}{"type": "message", "payload": msg})
 	}
 }
+
 func broadcastMessageUpdated(msg Message) {
 	clientsMux.RLock()
 	defer clientsMux.RUnlock()
@@ -552,6 +547,7 @@ func broadcastMessageUpdated(msg Message) {
 	}
 }
 
+// --- CORS ---
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -565,6 +561,7 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// --- MAIN ---
 func main() {
 	if err := godotenv.Load(); err != nil {
 		log.Println("⚠️ .env файл не найден")
@@ -581,13 +578,26 @@ func main() {
 		log.Fatal("❌ Ошибка инициализации БД:", err)
 	}
 
+	// --- Регистрация маршрутов (исправлено: без дублирования) ---
 	http.HandleFunc("/api/send-code", corsMiddleware(sendCodeHandler))
 	http.HandleFunc("/api/verify-code", corsMiddleware(verifyCodeHandler))
-	http.HandleFunc("/api/profile", corsMiddleware(authMiddleware(getUserProfileHandler)))
-	http.HandleFunc("/api/profile", corsMiddleware(authMiddleware(updateProfileHandler))) // PUT
-	http.HandleFunc("/api/users", corsMiddleware(authMiddleware(getUsersHandler)))
-	http.HandleFunc("/api/users/", corsMiddleware(authMiddleware(setAdminHandler))) // PUT /api/users/:id/admin
 
+	// Профиль – объединяем GET и PUT
+	http.HandleFunc("/api/profile", corsMiddleware(authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			getUserProfileHandler(w, r)
+		} else if r.Method == http.MethodPut {
+			updateProfileHandler(w, r)
+		} else {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		}
+	})))
+
+	// Админские маршруты
+	http.HandleFunc("/api/users", corsMiddleware(authMiddleware(getUsersHandler)))
+	http.HandleFunc("/api/users/", corsMiddleware(authMiddleware(setAdminHandler)))
+
+	// Сообщения
 	http.HandleFunc("/api/messages", corsMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
 			authMiddleware(getMessagesHandler)(w, r)
@@ -598,6 +608,8 @@ func main() {
 		}
 	}))
 	http.HandleFunc("/api/messages/", corsMiddleware(authMiddleware(editMessageHandler)))
+
+	// WebSocket
 	http.HandleFunc("/ws", wsHandler)
 
 	port := os.Getenv("PORT")
