@@ -659,10 +659,7 @@ func main() {
 
 	mux.HandleFunc("/ws", corsMiddleware(wsHandler))
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "10000"
-	}
+	port := "10000"
 	log.Printf("✅ Бэкенд запущен на порту %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, mux))
 }
