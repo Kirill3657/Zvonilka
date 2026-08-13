@@ -5,7 +5,7 @@ import AuthByEmail from './components/AuthByEmail';
 import ProfileSetup from './components/ProfileSetup';
 import Chat from './components/Chat';
 import AdminPanel from './components/AdminPanel';
-import './style.css';
+import './css/style.css';
 
 function AppContent() {
     const [user, setUser] = useState(null);
