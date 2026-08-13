@@ -201,7 +201,7 @@ func sendCodeHandler(w http.ResponseWriter, r *http.Request) {
 	`, code)
 
 	params := &resend.SendEmailRequest{
-		From:    "Zvonilka <hello@zvonilka.site>", // замени на свой
+		From:    "Zvonilka Team <hello@mail.zvonilka.site>", // замени на свой
 		To:      []string{req.Email},
 		Subject: "Код подтверждения для Zvonilka",
 		Html:    htmlContent,
